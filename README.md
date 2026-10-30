@@ -88,6 +88,7 @@ typed it there. Steam's own on-screen keyboard in Big Picture works too.
 | Bandwidth limit | Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. |
 | Audio | On, off | On | |
 | Start in | Big Picture, Desktop | Big Picture | |
+| After lost video packets | Automatic, Keep playing, Wait for a clean picture | Automatic | Automatic keeps playing on 2020 TVs (Tizen 5.5) and waits on the others. Keep playing may smear the picture for a moment after a lost packet. Waiting froze it for 10 to 50 s at a time on a Q74T streaming from a Steam Deck on Wi-Fi, when the keyframe lost a packet too. |
 | Show stream statistics | Shown, hidden | Hidden | Same as the red key during a stream. |
 
 Changes apply to the next stream.

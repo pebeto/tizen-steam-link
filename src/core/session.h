@@ -89,6 +89,9 @@ public:
         virtual void OnSessionDisconnected() {}
         // Last callback; the session threads are about to exit.
         virtual void OnSessionFinalized() {}
+        // The player could not start the video (a format the TV refuses). Runs on an ihslib
+        // thread: disconnect from elsewhere.
+        virtual void OnVideoFailed() {}
         virtual void OnCursorShown(float x, float y) { (void) x, (void) y; }
         virtual void OnCursorHidden() {}
     };

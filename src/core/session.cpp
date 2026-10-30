@@ -200,7 +200,9 @@ int Session::CbVideoStart(IHS_Session *, const IHS_StreamVideoConfig *config, vo
     self->colorspace_ = config->colorspace;
     Log(IHS_LogLevelInfo, "Session", "Video start: codec=%d %ux%u colorspace=%d", config->codec, config->width,
         config->height, config->colorspace);
-    return self->media_->VideoStart(*config);
+    int result = self->media_->VideoStart(*config);
+    if (result != 0) self->listener_->OnVideoFailed();
+    return result;
 }
 
 IHS_StreamVideoSubmitResult Session::CbVideoSubmit(IHS_Session *, IHS_Buffer *data, IHS_StreamVideoFrameFlag flags,

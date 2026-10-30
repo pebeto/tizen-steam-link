@@ -1,0 +1,87 @@
+Let the video go on after a lost frame instead of freezing until a keyframe.
+
+After a sequence gap the video channel requests a keyframe and drops every frame until one
+arrives, asking again every 200 ms. From a Steam Deck on Wi-Fi to a Samsung Q74T (Tizen 5.5,
+TV on Ethernet), a 1080p keyframe at 30 Mbit/s spans hundreds of packets and often lost one
+itself, so it was discarded too and the wait started over: the picture froze for 10 to 50 s
+at a time, with dozens of requests and no complete keyframe in between.
+
+With IHS_VideoWaitForKeyframe off, a gap (or partial frames that stall) reports the loss to the
+host, at most every 200 ms, and the following frames go on to the decoder. The picture may
+smear until the host's keyframe lands, but it keeps moving. The default stays on, which keeps
+the old behaviour; a decoder reset requested by the app still waits for a keyframe.
+
+diff -ruN a/include/ihslib/video.h b/include/ihslib/video.h
+--- a/include/ihslib/video.h	2026-10-26 23:19:50
++++ b/include/ihslib/video.h	2026-10-26 23:19:50
+@@ -129,4 +129,10 @@
+      * post-override rate. `value == 0` means override cleared. May be NULL.
+      */
+     void (*setBitrateOverride)(IHS_Session *session, int32_t value, void *context);
+-} IHS_StreamVideoCallbacks;
+\ No newline at end of file
++} IHS_StreamVideoCallbacks;
++
++/**
++ * false: after a lost frame, report the loss and go on decoding the frames that follow, instead
++ * of dropping them until a keyframe comes. true by default. Set before a session starts.
++ */
++extern bool IHS_VideoWaitForKeyframe;
+\ No newline at end of file
+diff -ruN a/src/session/channels/video/ch_data_video.c b/src/session/channels/video/ch_data_video.c
+--- a/src/session/channels/video/ch_data_video.c	2026-10-26 23:19:50
++++ b/src/session/channels/video/ch_data_video.c	2026-10-26 23:19:50
+@@ -51,6 +51,7 @@
+         uint16_t lastFrameId;
+         uint16_t frameCounter;
+         uint64_t waitingKeyFrame;
++        uint64_t lastLossReport;
+         uint64_t lastStatsTime;
+         bool frameStarted;
+         bool frameFinished;
+@@ -144,6 +145,18 @@
+         .stop = DataStop,
+ };
+ 
++bool IHS_VideoWaitForKeyframe = true;
++
++// Without waiting for a keyframe: tell the host about the loss, at most every 200 ms (the retry
++// interval of the waiting mode), and go on with the frames that follow.
++static void ReportLossNoWait(IHS_SessionChannel *channel) {
++    IHS_SessionChannelVideo *videoCh = (IHS_SessionChannelVideo *) channel;
++    uint64_t now = IHS_TimerNow();
++    if (videoCh->states.lastLossReport != 0 && now - videoCh->states.lastLossReport < 200) return;
++    videoCh->states.lastLossReport = now;
++    IHS_SessionChannelDataLost(channel);
++}
++
+ static const uint8_t EmptyIV[16] = {
+         0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0,
+@@ -241,8 +254,13 @@
+             videoCh->states.waitingKeyFrame = IHS_TimerNow();
+         }
+     } else if (vhead.sequence != videoCh->states.expectedSequence) {
+-        if (videoCh->states.waitingKeyFrame == 0) {
++        if (!IHS_VideoWaitForKeyframe) {
+             IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
++                           "Unexpected video frame sequence %u (expect %u), reporting the loss", vhead.sequence,
++                           videoCh->states.expectedSequence);
++            ReportLossNoWait(channel);
++        } else if (videoCh->states.waitingKeyFrame == 0) {
++            IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+                            "Unexpected video frame sequence %u (expect %u), request keyframe", vhead.sequence,
+                            videoCh->states.expectedSequence);
+             IHS_SessionChannelDataLost(channel);
+@@ -383,6 +401,11 @@
+     }
+     IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+                    "Partial frames stalled for %u ms, request keyframe", span * 1000 / 65536);
++    if (!IHS_VideoWaitForKeyframe) {
++        DiscardPending(videoCh);
++        ReportLossNoWait(channel);
++        return;
++    }
+     IHS_SessionChannelDataLost(channel);
+     videoCh->states.waitingKeyFrame = IHS_TimerNow();
+ }

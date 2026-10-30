@@ -70,7 +70,8 @@
         cancelPair: function () {
             record('cancelPair', arguments);
         },
-        startStream: function (ip, steamId, key, w, h, hevc, audioOn, bigPicture, quality, bitrate, fps, hdr) {
+        startStream: function (ip, steamId, key, w, h, hevc, audioOn, bigPicture, quality, bitrate, fps, hdr,
+                               keepPlaying) {
             record('startStream', arguments);
             codec = hevc || hdr ? 5 : 4;
             colorspace = hdr ? 5 : 3;
@@ -91,6 +92,15 @@
             clearInterval(streaming);
             emit('streamDisconnected', {}, 100);
             emit('streamEnded', {}, 300);
+        },
+        latencyNeedsReload: function () {
+            return false;
+        },
+        legacyPlayer: function () {
+            return false;
+        },
+        playerSetUp: function () {
+            return false;
         },
         key: function () {
             record('key', arguments);

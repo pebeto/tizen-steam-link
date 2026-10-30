@@ -20,40 +20,47 @@ constexpr int kMaxOpusSamples = 5760;
 // If no audio arrived for this long while video plays, feed silence so the media
 // element doesn't stall video waiting for audio.
 constexpr auto kAudioStarvation = 100ms;
-// How far audio timestamps may drift from the wall clock before they are pulled back (behind)
-// or packets dropped (ahead). In the low latency modes the player's clock follows the
-// timestamps appended, so audio running ahead made video frames count as late: with 150 ms
-// ahead allowed, an HEVC stream on a Samsung monitor dropped about 100 frames at the start,
-// with 40 ms about 20, and nothing audible changed.
-const Player::Seconds kAudioMaxBehind(0.04);
-const Player::Seconds kAudioMaxAhead(0.04);
 constexpr auto kOpenTimeout = 5000ms;
 // Most lost audio frames in a row to conceal: 80 ms of 10 ms frames.
 constexpr uint32_t kMaxConcealedFrames = 8;
 
-// The level follows the picture size times the frame rate. main10: HEVC's 10-bit profile, for HDR.
-const char *VideoMime(const IHS_StreamVideoConfig &config, uint32_t fps, bool main10) {
+struct TrackChoice {
+    const char *mime;
+    uint32_t fps;
+};
+
+// The level follows the picture size times the frame rate, highest first. main10: HEVC's 10-bit
+// profile, for HDR. A Q74T (Tizen 5.5) refuses an H.264 level 5.2 track, which 1080p at 120 fps
+// asks for, so lower levels follow, and last the same level at 60 fps: the picture still plays,
+// at the frame rate the TV can show.
+std::vector<TrackChoice> VideoTrackChoices(const IHS_StreamVideoConfig &config, uint32_t fps, bool main10) {
     uint64_t samples = static_cast<uint64_t>(config.width) * config.height * fps;
     switch (config.codec) {
         case IHS_StreamVideoCodecH264: {
-            // Level 4.2 allows 522240 macroblocks a second (1080p at 64 fps); 5.2 allows 2073600
-            // (4K60, 1080p120). Steam's 4K H.264 is level 5.1.
+            // Level 4.2 allows 522240 macroblocks a second (1080p at 64 fps); 5.1 allows 983040
+            // (4K30, 1080p at 120 only just not); 5.2 allows 2073600 (4K60, 1080p120). Steam's 4K
+            // H.264 is level 5.1.
             uint64_t macroblocks = ((config.width + 15) / 16) * ((config.height + 15) / 16) * static_cast<uint64_t>(fps);
+            const char *high52 = "video/mp4; codecs=\"avc1.640034\"";  // High, level 5.2
+            const char *high51 = "video/mp4; codecs=\"avc1.640033\"";  // High, level 5.1
+            const char *high42 = "video/mp4; codecs=\"avc1.64002A\"";  // High, level 4.2
             if (macroblocks > 522240) {
-                return "video/mp4; codecs=\"avc1.640034\"";  // High, level 5.2
+                return {{high52, fps}, {high51, fps}, {high51, fps > 60 ? 60u : fps}, {high42, 60}};
             }
-            return "video/mp4; codecs=\"avc1.64002A\"";  // High, level 4.2
+            return {{high42, fps}};
         }
-        case IHS_StreamVideoCodecHEVC:
+        case IHS_StreamVideoCodecHEVC: {
             // Level 5.1 allows 534773760 luma samples a second (4K60, 1080p120); 5.2 twice that.
-            if (samples > 534773760ull) {
-                return main10 ? "video/mp4; codecs=\"hev1.2.4.L156.B0\""   // Main 10, level 5.2
-                              : "video/mp4; codecs=\"hev1.1.6.L156.B0\"";  // Main, level 5.2 (4K120)
-            }
-            return main10 ? "video/mp4; codecs=\"hev1.2.4.L153.B0\""   // Main 10, level 5.1
-                          : "video/mp4; codecs=\"hev1.1.6.L153.B0\"";  // Main, level 5.1
+            const char *main52 = main10 ? "video/mp4; codecs=\"hev1.2.4.L156.B0\""   // Main 10, level 5.2
+                                        : "video/mp4; codecs=\"hev1.1.6.L156.B0\"";  // Main, level 5.2 (4K120)
+            const char *main51 = main10 ? "video/mp4; codecs=\"hev1.2.4.L153.B0\""   // Main 10, level 5.1
+                                        : "video/mp4; codecs=\"hev1.1.6.L153.B0\"";  // Main, level 5.1
+            if (samples > 534773760ull) return {{main52, fps}, {main51, fps}, {main51, 60}};
+            if (fps > 60) return {{main51, fps}, {main51, 60}};
+            return {{main51, fps}};
+        }
         default:
-            return nullptr;
+            return {};
     }
 }
 
@@ -147,8 +154,8 @@ bool Player::OpenSource(const IHS_StreamVideoConfig &config) {
     // when the host's display isn't in HDR. Moonlight for Tizen sets up HDR the same way; the TV
     // takes the HDR signalling from the stream itself.
     bool main10 = hdr_ || config.colorspace == IHS_StreamVideoColorspaceHDR10;
-    const char *mime = VideoMime(config, fps_, main10);
-    if (mime == nullptr) {
+    std::vector<TrackChoice> choices = VideoTrackChoices(config, fps_, main10);
+    if (choices.empty()) {
         Log(IHS_LogLevelError, "Player", "Unsupported video codec %d", config.codec);
         return false;
     }
@@ -167,6 +174,7 @@ bool Player::OpenSource(const IHS_StreamVideoConfig &config) {
                 kSampleRate,
         });
         if (audio) {
+            std::lock_guard<std::mutex> lock(audioMutex_);
             audioTrack_ = std::move(*audio);
             audioTrack_.SetListener(&audioListener_);
         } else {
@@ -175,20 +183,33 @@ bool Player::OpenSource(const IHS_StreamVideoConfig &config) {
         }
     }
 
-    auto video = source_.AddTrack(samsung::wasm::ElementaryVideoTrackConfig{
-            mime,
-            {},
-            config.width,
-            config.height,
-            fps_,
-            1,
-    });
-    if (!video) {
-        Log(IHS_LogLevelError, "Player", "Could not add the video track (%s %ux%u)", mime, config.width,
-            config.height);
+    const char *mime = nullptr;
+    for (const TrackChoice &choice : choices) {
+        auto video = source_.AddTrack(samsung::wasm::ElementaryVideoTrackConfig{
+                choice.mime,
+                {},
+                config.width,
+                config.height,
+                choice.fps,
+                1,
+        });
+        if (video) {
+            videoTrack_ = std::move(*video);
+            mime = choice.mime;
+            trackFps_ = choice.fps;
+            break;
+        }
+        Log(IHS_LogLevelWarn, "Player", "The TV refused a video track (%s %ux%u at %u fps): %d", choice.mime,
+            config.width, config.height, choice.fps, static_cast<int>(video.operation_result));
+    }
+    if (mime == nullptr) {
+        Log(IHS_LogLevelError, "Player", "Could not add the video track (%ux%u at %u fps)", config.width,
+            config.height, fps_);
         return false;
     }
-    videoTrack_ = std::move(*video);
+    if (trackFps_ != fps_) {
+        Log(IHS_LogLevelWarn, "Player", "Playing at %u fps: the TV refused %u", trackFps_, fps_);
+    }
     videoTrack_.SetListener(&videoListener_);
 
     source_.Open([](samsung::wasm::OperationResult) {});
@@ -208,8 +229,8 @@ bool Player::OpenSource(const IHS_StreamVideoConfig &config) {
             audioOpen_.load());
         return false;
     }
-    Log(IHS_LogLevelInfo, "Player", "Playing %s %ux%u, audio %s", mime, config.width, config.height,
-        audioEnabled_ ? "on" : "off");
+    Log(IHS_LogLevelInfo, "Player", "Playing %s %ux%u at %u fps, audio %s", mime, config.width, config.height,
+        trackFps_, audioEnabled_ ? "on" : "off");
     return true;
 }
 
@@ -221,13 +242,36 @@ int Player::VideoStart(const IHS_StreamVideoConfig &config) {
         waitKeyframe_ = true;
         lostReported_ = false;
     }
-    if (sourceOpened_) {
-        // Same source, same tracks; the frames carry the new size in their SPS.
-        return 0;
+    bool audio = audioEnabled_;
+    bool main10 = hdr_ || config.colorspace == IHS_StreamVideoColorspaceHDR10;
+    if (sourceUsed_) {
+        if (sourceOpened_ && openCodec_ == config.codec && openMain10_ == main10 && openAudio_ == audio) {
+            // Same tracks; the frames carry the new size in their SPS, and the track's frame rate
+            // only labels the packets. The clock runs on from the last stream: audio catches up
+            // through AppendPcm.
+            Log(IHS_LogLevelInfo, "Player", "Reusing the open media source");
+            return 0;
+        }
+        // Tracks can't change in a page on the legacy player: removing them and adding new ones
+        // crashed the browser on a Q74T, dropping them without RemoveTrack() left the source
+        // full, and a reload after a stream hung it. Only a new app start gets new tracks.
+        Log(IHS_LogLevelError, "Player",
+            "The player was set up for codec %d%s, audio %s; this stream needs codec %d%s, audio %s. "
+            "Restart the app to change it.",
+            openCodec_, openMain10_ ? " (10-bit)" : "", openAudio_ ? "on" : "off", config.codec,
+            main10 ? " (10-bit)" : "", audio ? "on" : "off");
+        restartNeeded_ = true;
+        return -1;
     }
     start_ = std::chrono::steady_clock::now();
     lastAudio_ = start_;
+    sourceUsed_ = true;
+    openCodec_ = config.codec;
+    openMain10_ = main10;
+    openAudio_ = audio;
     if (!OpenSource(config)) {
+        // The tracks it added stay on the source, so another stream in this page can't open.
+        restartNeeded_ = true;
         return -1;
     }
     sourceOpened_ = true;
@@ -255,21 +299,30 @@ IHS_StreamVideoSubmitResult Player::VideoFrame(const uint8_t *data, size_t len, 
         width = width_;
         height = height_;
     }
+    auto arrived = std::chrono::steady_clock::now();
+    if (lastFrame_.time_since_epoch().count() != 0) {
+        int gap = static_cast<int>(std::chrono::duration_cast<std::chrono::microseconds>(arrived - lastFrame_).count());
+        if (gap > maxFrameGapUs_) maxFrameGapUs_ = gap;
+    }
+    lastFrame_ = arrived;
     Seconds pts = Now();
     samsung::wasm::ElementaryMediaPacket packet{
             pts,
             pts,
-            Seconds(1.0 / fps_),
+            Seconds(1.0 / trackFps_),
             keyframe,
             len,
             data,
             width,
             height,
-            fps_,
+            trackFps_,
             1,
             videoSession_.load(),
     };
     auto appended = videoTrack_.AppendPacket(packet);
+    int appendUs = static_cast<int>(
+            std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - arrived).count());
+    if (appendUs > maxAppendUs_) maxAppendUs_ = appendUs;
     if (!appended) {
         uint64_t failed = ++videoFailed_;
         lastAppendError_ = static_cast<int>(appended.operation_result);
@@ -313,11 +366,19 @@ int Player::AudioStart(const IHS_StreamAudioConfig &config) {
 
 void Player::AppendPcm(const int16_t *pcm, int samplesPerChannel) {
     Seconds duration(static_cast<double>(samplesPerChannel) / kSampleRate);
-    // Keep audio timestamps near the wall clock. Behind: jump forward (a gap). Ahead, after
-    // a burst of late packets: drop, so the backlog and the latency can't grow.
+    // Keep audio timestamps near the wall clock. Behind: jump forward, a gap, and start a little
+    // ahead so the next bit of jitter doesn't make another one. Ahead, after a burst of late
+    // packets: drop now and then to work the backlog off, and everything past the limit, so the
+    // latency can't grow.
     Seconds now = Now();
-    if (audioPts_ < now - kAudioMaxBehind) audioPts_ = now;
-    if (audioPts_ > now + kAudioMaxAhead) {
+    if (audioPts_ < now - audioTiming_.maxBehind) {
+        audioPts_ = now + audioTiming_.resetLead;
+        audioGaps_++;
+    }
+    Seconds lead = audioPts_ - now;
+    audioLeadUs_ = static_cast<int>(lead.count() * 1e6);
+    if (lead > audioTiming_.maxAhead ||
+        (lead > audioTiming_.drainAbove && ++drainCount_ % audioTiming_.drainEvery == 0)) {
         audioDropped_++;
         return;
     }
@@ -400,7 +461,7 @@ void Player::AudioStop() {
     }
 }
 
-Player::Counters Player::counters() const {
+Player::Counters Player::counters() {
     Counters c;
     c.videoAppended = videoAppended_.load();
     c.videoFailed = videoFailed_.load();
@@ -415,6 +476,10 @@ Player::Counters Player::counters() const {
     c.lastAppendError = lastAppendError_.load();
     c.pipelineErrors = pipelineErrors_.load();
     c.lastPipelineError = lastPipelineError_.load();
+    c.audioGaps = audioGaps_.load();
+    c.audioLeadMs = audioLeadUs_.load() / 1000;
+    c.maxFrameGapMs = maxFrameGapUs_.exchange(0) / 1000;
+    c.maxAppendMs = maxAppendUs_.exchange(0) / 1000;
     return c;
 }
 
