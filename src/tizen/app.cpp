@@ -158,15 +158,23 @@ public:
         return true;
     }
 
+    // Discovery and probes send UDP packets, and Samsung's socket extension can't run on the
+    // browser thread (Tizen 5.5): on the worker.
     void StartDiscovery() {
-        if (client_) client_->StartDiscovery(2000);
+        if (client_) worker_.Post([this] { client_->StartDiscovery(2000); });
     }
 
     void StopDiscovery() {
-        if (client_) client_->StopDiscovery();
+        if (client_) worker_.Post([this] { client_->StopDiscovery(); });
     }
 
-    bool Probe(const std::string &ip) { return client_ && client_->Probe(ip); }
+    // Reports whether the address is valid; the probe itself goes out on the worker.
+    bool Probe(const std::string &ip) {
+        IHS_IPAddress address{};
+        if (!client_ || !IHS_IPAddressFromString(&address, ip.c_str())) return false;
+        worker_.Post([this, ip] { client_->Probe(ip); });
+        return true;
+    }
 
     // Sockets block: off the main thread.
     bool Wake(const std::string &mac) {
@@ -184,7 +192,7 @@ public:
             pendingPin_ = pin;
         }
         // The host answers the probe through OnHostFound, which starts the pairing.
-        return client_->Probe(ip);
+        return Probe(ip);
     }
 
     // Only cancels a pairing ihslib is still running. Once it reported a result, its task and
@@ -217,7 +225,7 @@ public:
             pendingStream_ = params;
             streamRequested_ = false;
         }
-        return client_->Probe(params.ip);
+        return Probe(params.ip);
     }
 
     void StopStream() {

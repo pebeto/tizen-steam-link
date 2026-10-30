@@ -10,6 +10,7 @@
 
 #include <opus.h>
 
+#include "core/counter.h"
 #include "core/session.h"
 
 #include "samsung/html/html_media_element.h"
@@ -141,9 +142,9 @@ private:
     Seconds audioPts_{0};
     std::chrono::steady_clock::time_point lastAudio_;
 
-    std::atomic<uint64_t> videoAppended_{0}, videoFailed_{0}, audioAppended_{0}, audioFailed_{0}, silence_{0},
+    Counter64 videoAppended_{0}, videoFailed_{0}, audioAppended_{0}, audioFailed_{0}, silence_{0},
             audioDropped_{0};
-    std::atomic<uint64_t> videoSessionChanges_{0}, videoTrackCloses_{0}, pipelineErrors_{0}, audioConcealed_{0};
+    Counter64 videoSessionChanges_{0}, videoTrackCloses_{0}, pipelineErrors_{0}, audioConcealed_{0};
     std::atomic<int> lastCloseReason_{-1}, lastAppendError_{0}, lastPipelineError_{-1};
 };
 

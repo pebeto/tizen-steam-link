@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "core/client.h"
+#include "core/counter.h"
 #include "core/gamepad.h"
 #include "core/identity.h"
 #include "core/ihs.h"
@@ -150,7 +151,7 @@ private:
     bool joined_ = false;
     std::atomic<bool> connected_{false};
 
-    std::atomic<uint64_t> videoFrames_{0}, keyFrames_{0}, videoBytes_{0}, audioPackets_{0}, audioBytes_{0};
+    Counter64 videoFrames_{0}, keyFrames_{0}, videoBytes_{0}, audioPackets_{0}, audioBytes_{0};
     std::atomic<uint32_t> width_{0}, height_{0};
     std::atomic<int> videoCodec_{IHS_StreamVideoCodecNone}, audioCodec_{IHS_StreamAudioCodecNone};
     std::atomic<int> colorspace_{IHS_StreamVideoColorspaceUnknown};
