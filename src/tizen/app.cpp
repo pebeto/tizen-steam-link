@@ -142,6 +142,8 @@ class App : public Client::Listener, public Session::Listener {
 public:
     explicit App(samsung::wasm::EmssLatencyMode latency) : player_("tsl-video", latency) {}
 
+    Player &player() { return player_; }
+
     ~App() override {
         polling_ = false;
         if (gamepadThread_.joinable()) gamepadThread_.join();
@@ -306,7 +308,9 @@ public:
                ",\"lastCloseReason\":" + std::to_string(c.lastCloseReason) + ",\"lastAppendError\":" +
                std::to_string(c.lastAppendError) + ",\"pipelineErrors\":" + std::to_string(c.pipelineErrors) +
                ",\"lastPipelineError\":" + std::to_string(c.lastPipelineError) + ",\"audioConcealed\":" +
-               std::to_string(c.audioConcealed) + "}";
+               std::to_string(c.audioConcealed) + ",\"audioGaps\":" + std::to_string(c.audioGaps) +
+               ",\"audioLeadMs\":" + std::to_string(c.audioLeadMs) + ",\"maxFrameGapMs\":" +
+               std::to_string(c.maxFrameGapMs) + ",\"maxAppendMs\":" + std::to_string(c.maxAppendMs) + "}";
     }
 
     // Client::Listener (ihslib client thread)
@@ -432,6 +436,13 @@ public:
         auto session = CurrentSession();
         bool timedOut = session && session->Stats().timedOut;
         PostEvent("streamDisconnected", std::string("{\"timedOut\":") + (timedOut ? "true" : "false") + "}");
+    }
+
+    void OnVideoFailed() override {
+        PostEvent("videoFailed", std::string("{\"restartNeeded\":") + (player_.restartNeeded() ? "true" : "false") + "}");
+        worker_.Post([this] {
+            if (auto session = CurrentSession()) session->Disconnect();
+        });
     }
 
     void OnSessionFinalized() override {
@@ -580,6 +591,32 @@ private:
 };
 
 App *g_app = nullptr;
+int g_tizenVersion = 0;
+bool g_ultraLowAvailable = false;
+// The legacy WASM player of 2020 TVs (Tizen 5.5): the page keeps its player across streams
+// instead of reloading, and streams go on after a lost frame by default (see app.js).
+bool g_legacyPlayer = false;
+samsung::wasm::EmssLatencyMode g_latency = samsung::wasm::EmssLatencyMode::kLow;
+
+// The player's latency mode is fixed when it is created, before the stream's codec is known
+// (the page reloads when a setting change changes the mode).
+//
+// Up to Tizen 8, ultra low latency is the lowest latency and switches the TV to Game Mode.
+// Tizen 9 changed Game Mode for WebAssembly apps: ultra low latency no longer switches it on,
+// and on a Samsung M7 smart monitor (Tizen 9) it decoded HEVC without showing a frame past
+// the first, and dropped about 17% of H.264 frames. So Tizen 9 and later get low latency,
+// and Game Mode comes from the use.game.mode metadata in config.xml instead, as in Moonlight
+// for Tizen. HEVC gets low latency on every version, since nothing older was tried with it.
+//
+// The latency setting overrides that rule: 1 is low, 2 ultra low (where the TV has it). On a
+// QN90D TV (Tizen 9) H.264 plays in ultra low latency, but HEVC, with or without HDR, freezes
+// on its first frame as on the M7, so HEVC always gets low latency. A Q74T (Tizen 5.5) has no
+// ultra low latency at all.
+samsung::wasm::EmssLatencyMode LatencyFor(bool hevc, int latency) {
+    bool ultraLow = latency == 0 ? g_tizenVersion < 9 && !hevc && g_ultraLowAvailable
+                                 : latency == 2 && !hevc && g_ultraLowAvailable;
+    return ultraLow ? samsung::wasm::EmssLatencyMode::kUltraLow : samsung::wasm::EmssLatencyMode::kLow;
+}
 
 // Bound functions. All run on the browser main thread.
 
@@ -599,9 +636,14 @@ void CancelPair() { g_app->CancelPair(); }
 
 // quality: Steam's preference (-1 automatic, 1 fast, 2 balanced, 3 beautiful). bitrateKbps: -1 lets
 // Steam decide. fps: 60 or 120. hdr: offer HDR10, which comes as HEVC, so it turns hevc on too.
+// keepPlaying: after a lost video frame, go on decoding (a moment of smeared picture) instead of
+// dropping every frame until a complete keyframe. From a Steam Deck on Wi-Fi to a Q74T, a 1080p
+// keyframe at 30 Mbit/s often lost a packet too, and waiting froze the picture for 10 to 50 s.
+// The UI turns it on by default only for the legacy player.
 bool StartStream(const std::string &ip, const std::string &steamId, const std::string &keyHex, int maxWidth,
                  int maxHeight, bool hevc, bool audio, bool bigPicture, int quality, int bitrateKbps, int fps,
-                 bool hdr) {
+                 bool hdr, bool keepPlaying) {
+    IHS_VideoWaitForKeyframe = !keepPlaying;
     StreamParams params;
     params.ip = ip;
     params.steamId = std::strtoull(steamId.c_str(), nullptr, 10);
@@ -622,6 +664,12 @@ bool StartStream(const std::string &ip, const std::string &steamId, const std::s
 }
 
 void StopStream() { g_app->StopStream(); }
+// Whether these codec and latency settings need another player latency mode, which only a page
+// reload can give.
+bool LatencyNeedsReload(bool hevc, int latency) { return LatencyFor(hevc, latency) != g_latency; }
+bool LegacyPlayer() { return g_legacyPlayer; }
+// The player's tracks are set up (the legacy player keeps them for the page).
+bool PlayerSetUp() { return g_app->player().setUp(); }
 void Key(const std::string &code, bool down) { g_app->Key(code, down); }
 void SendText(const std::string &text) { g_app->SendText(text); }
 void SetPadInput(bool enabled) { g_app->SetPadInput(enabled); }
@@ -638,20 +686,7 @@ int main() {
     tsl::SetLogSink(tsl::LogToConsole);
     tsl::SetLogLevel(IHS_LogLevelInfo);
     IHS_Init();
-    // The player's latency mode is fixed when it is created, before the stream's codec is known
-    // (the page reloads after every stream and when the codec setting changes).
-    //
-    // Up to Tizen 8, ultra low latency is the lowest latency and switches the TV to Game Mode.
-    // Tizen 9 changed Game Mode for WebAssembly apps: ultra low latency no longer switches it on,
-    // and on a Samsung M7 smart monitor (Tizen 9) it decoded HEVC without showing a frame past
-    // the first, and dropped about 17% of H.264 frames. So Tizen 9 and later get low latency,
-    // and Game Mode comes from the use.game.mode metadata in config.xml instead, as in Moonlight
-    // for Tizen. HEVC gets low latency on every version, since nothing older was tried with it.
-    // The codec setting: false for H.264, true for HEVC, 'hdr' for HEVC with HDR.
-    //
-    // The latency setting overrides that rule: 1 is low, 2 ultra low (where the TV has it). On a
-    // QN90D TV (Tizen 9) H.264 plays in ultra low latency, but HEVC, with or without HDR, freezes
-    // on its first frame as on the M7, so HEVC always gets low latency.
+    // The codec and latency settings pick the player's latency mode: see LatencyFor.
     bool hevc = EM_ASM_INT({
         try {
             return JSON.parse(localStorage.getItem('tsl.settings') || '{}').hevc ? 1 : 0;
@@ -675,12 +710,21 @@ int main() {
         }
     });
     // Older TVs may lack the ultra low latency mode altogether.
-    bool hasUltraLow = samsung::wasm::EmssVersionInfo::Create().has_ultra_low_latency;
-    bool ultraLow = latency == 0 ? tizenVersion < 9 && !hevc && hasUltraLow : latency == 2 && !hevc && hasUltraLow;
+    auto emss = samsung::wasm::EmssVersionInfo::Create();
+    tsl::Log(IHS_LogLevelInfo, "Player",
+             "EMSS: emss=%d legacy=%d texture=%d decoding_mode=%d low_latency_texture=%d ultra_low=%d validation=%d",
+             emss.has_emss, emss.has_legacy_emss, emss.has_video_texture, emss.has_decoding_mode,
+             emss.has_low_latency_video_texture, emss.has_ultra_low_latency, emss.has_config_validation);
+    tsl::g_tizenVersion = tizenVersion;
+    tsl::g_ultraLowAvailable = emss.has_ultra_low_latency;
+    tsl::g_legacyPlayer = emss.has_legacy_emss;
+    auto mode = tsl::LatencyFor(hevc, latency);
+    tsl::g_latency = mode;
     tsl::Log(IHS_LogLevelInfo, "Player", "%s latency mode (Tizen %d, codec setting %s, latency setting %s)",
-             ultraLow ? "Ultra low" : "Low", tizenVersion, hevc ? "HEVC" : "H.264",
-             latency == 1 ? "low" : latency == 2 ? "ultra low" : "automatic");
-    tsl::g_app = new tsl::App(ultraLow ? samsung::wasm::EmssLatencyMode::kUltraLow : samsung::wasm::EmssLatencyMode::kLow);
+             mode == samsung::wasm::EmssLatencyMode::kUltraLow ? "Ultra low" : "Low", tizenVersion,
+             hevc ? "HEVC" : "H.264", latency == 1 ? "low" : latency == 2 ? "ultra low" : "automatic");
+    tsl::g_app = new tsl::App(mode);
+    if (emss.has_legacy_emss) tsl::g_app->player().SetAudioTiming(tsl::Player::WideAudioTiming());
     EM_ASM({
         if (typeof window.tslReady === 'function') window.tslReady();
     });
@@ -698,6 +742,9 @@ EMSCRIPTEN_BINDINGS(tsl) {
     emscripten::function("cancelPair", &tsl::CancelPair);
     emscripten::function("startStream", &tsl::StartStream);
     emscripten::function("stopStream", &tsl::StopStream);
+    emscripten::function("latencyNeedsReload", &tsl::LatencyNeedsReload);
+    emscripten::function("legacyPlayer", &tsl::LegacyPlayer);
+    emscripten::function("playerSetUp", &tsl::PlayerSetUp);
     emscripten::function("key", &tsl::Key);
     emscripten::function("sendText", &tsl::SendText);
     emscripten::function("setPadInput", &tsl::SetPadInput);

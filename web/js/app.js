@@ -48,6 +48,9 @@
             text: function (v) { return v ? 'On' : 'Off'; }},
         {key: 'bigPicture', label: 'Start in', values: [false, true],
             text: function (v) { return v ? 'Big Picture' : 'Desktop'; }},
+        // Automatic: keep playing on the legacy player (2020 TVs), wait elsewhere.
+        {key: 'keepPlaying', label: 'After lost video packets', values: ['auto', true, false],
+            text: function (v) { return v === 'auto' ? 'Automatic' : v ? 'Keep playing' : 'Wait for a clean picture'; }},
         {key: 'stats', label: 'Show stream statistics', values: [false, true], kind: 'switch',
             text: function (v) { return v ? 'Shown' : 'Hidden'; }},
     ];
@@ -55,7 +58,7 @@
     // 20 Mbit/s, Moonlight's default for 1080p at 60 fps: on Wi-Fi a lower limit means smaller
     // keyframes, so fewer packets to lose. Big Picture, as in Steam's own Steam Link app.
     var DEFAULT_SETTINGS = {resolution: 1, framerate: 60, hevc: false, latency: 0, quality: 2, bandwidth: 20000,
-        audio: true, bigPicture: true, stats: false};
+        audio: true, bigPicture: true, stats: false, keepPlaying: 'auto'};
     var ONLINE_MS = 9000;
     var PAIR_TIMEOUT_MS = 120000;
     var CONNECT_TIMEOUT_MS = 30000;
@@ -74,6 +77,7 @@
     var mod = null;  // WASM module, once ready
     var state = {
         fatal: false,  // the module failed or can't start; streaming is off
+        legacyPlayer: false,  // the TV's WASM player is the legacy one (2020 TVs, Tizen 5.5)
         hosts: {},
         reconnects: 0,  // automatic reconnects in a row
         settings: {},
@@ -678,8 +682,14 @@
         openDialog(dlg, $('#settings-list li'), function (action, el) {
             if (action === 'close' || action === 'cancel') {
                 closeDialog();
-                // The module picks the player's latency mode from these settings at page load.
-                if (state.settings.hevc !== hevcAtOpen || state.settings.latency !== latencyAtOpen) location.reload();
+                // The module picks the player's latency mode from these settings at page load. On a
+                // TV without ultra low latency (Tizen 5.5) the mode is the same for every setting.
+                if ((state.settings.hevc !== hevcAtOpen || state.settings.latency !== latencyAtOpen) && mod &&
+                        mod.latencyNeedsReload(!!state.settings.hevc, Number(state.settings.latency) || 0)) {
+                    reloadPage();
+                } else if (tracksPending()) {
+                    toast('The codec and audio settings apply the next time you open the app.');
+                }
                 return;
             }
             if (el && el.hasAttribute('data-key')) changeSetting(el, 1);
@@ -712,10 +722,12 @@
         state.scope = null;
         setFocus(null);
         showStreamStatus('Starting the stream…');
+        // The legacy player keeps the codec and audio of its first stream until the app restarts.
+        var tracks = playerTracks();
         var ok = mod.startStream(host.ip, String(host.steamId || ''), host.key, res.w, res.h,
-            !!state.settings.hevc, !!state.settings.audio, !!state.settings.bigPicture,
+            !!tracks.hevc, !!tracks.audio, !!state.settings.bigPicture,
             Number(state.settings.quality), Number(state.settings.bandwidth), Number(state.settings.framerate),
-            state.settings.hevc === 'hdr');
+            tracks.hevc === 'hdr', keepPlaying());
         if (!ok) streamFailed('Could not contact ' + host.hostname + '.');
     }
 
@@ -751,22 +763,92 @@
         toast(reason, true);
     }
 
-    // Once a session exists the player stays bound to it, so the page is reloaded
-    // after the session has ended.
+    // The codec and audio settings the next stream's tracks follow: the current ones, or on the
+    // legacy player, once it has set up its tracks, the ones it set them up with.
+    function playerTracks() {
+        if (state.legacyPlayer && state.tracks && mod && mod.playerSetUp()) return state.tracks;
+        state.tracks = {hevc: state.settings.hevc, audio: state.settings.audio};
+        return state.tracks;
+    }
+
+    // A codec or audio change the legacy player can't make before the app starts again.
+    function tracksPending() {
+        var t = state.tracks;
+        return !!(state.legacyPlayer && t && mod && mod.playerSetUp() &&
+            (t.hevc !== state.settings.hevc || t.audio !== state.settings.audio));
+    }
+
+    function keepPlaying() {
+        var v = state.settings.keepPlaying;
+        return v === 'auto' || v === undefined ? state.legacyPlayer : v !== false;
+    }
+
+    // Once a session exists the player stays bound to it, so the page is reloaded after the
+    // session has ended, which starts the next stream with a fresh player. The legacy player of
+    // 2020 TVs (Tizen 5.5) is the exception: on a Q74T a reload after a stream hung the browser
+    // inside the player, and the TV then closed the app. There the app goes back to the list
+    // instead and the module keeps the player for the next stream, as Moonlight for Tizen does.
+    // After a module crash (mod is null) every TV reloads, for a fresh module.
+    function keepsPlayer() {
+        return !!(mod && state.legacyPlayer);
+    }
+
+    // Ends the stream view once the session is gone: after keepMs back to the list when the
+    // player is kept, otherwise a reload after reloadMs, with s.after carried over.
+    function scheduleEnd(s, keepMs, reloadMs) {
+        clearTimeout(s.finishTimer);
+        if (keepsPlayer()) {
+            s.finishTimer = setTimeout(finishStream, keepMs);
+            return;
+        }
+        var after = s.after || {};
+        try {
+            if (after.reconnect) sessionStorage.setItem('tsl.reconnect', JSON.stringify(after.reconnect));
+            if (after.message) sessionStorage.setItem('tsl.message', after.message);
+        } catch (e) { /* not important */ }
+        s.finishTimer = setTimeout(reloadPage, reloadMs);
+    }
+
     function endStream(message) {
         var s = state.stream;
         if (!s || s.ending) return;
         s.ending = true;
+        s.after = {message: message || null};
         clearTimeout(s.timeout);
-        if (message) {
-            try {
-                sessionStorage.setItem('tsl.message', message);
-            } catch (e) { /* not important */ }
-        }
         showStreamStatus('Disconnecting…');
         if (mod) mod.stopStream();
-        // If the session never comes back with streamEnded, reload anyway.
-        setTimeout(reloadPage, 6000);
+        // If the session never comes back with streamEnded, end anyway.
+        scheduleEnd(s, 8000, 6000);
+    }
+
+    // The session is gone and the player is kept: back to the list, then reconnect if that was
+    // asked for.
+    function finishStream() {
+        var s = state.stream;
+        if (!s) return;
+        [s.timeout, s.backTimer, s.finishTimer, s.reconnectReset].forEach(clearTimeout);
+        clearInterval(s.statsTimer);
+        var after = s.after || {};
+        state.stream = null;
+        if (state.streamMenu || dialogHandler) closeStreamDialogs();
+        try {
+            if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
+        } catch (e) { /* not important */ }
+        $('#stream-status').hidden = true;
+        $('#stream-hint').hidden = true;
+        $('#stream-stats').hidden = true;
+        $('#stream-stats').textContent = '';
+        $('#stream').hidden = true;
+        $('#home').hidden = false;
+        document.body.classList.remove('streaming');
+        setScope($('#home'));
+        renderHosts();
+        if (after.reconnect) {
+            state.reconnects = after.reconnect.count;
+            resumeStream(after.reconnect.ip);
+        } else if (after.message) {
+            toast(after.message);
+        }
     }
 
     function reloadPage() {
@@ -782,7 +864,11 @@
         return 'loss ' + pct(lost, sent) + ' now, ' + pct(st.videoPacketsLost || 0, total) + ' overall\n' +
             (st.fec ? 'FEC: ' + st.fecRecovered + ' rebuilt, ' + st.fecUnrecoverable + ' lost' : 'FEC: off') +
             '   keyframe requests ' + (st.lostReports || 0) + '\n' +
-            'round trip ' + (st.roundTripMs > 0 ? st.roundTripMs.toFixed(1) + ' ms' : 'not measured yet');
+            // ihslib reports a garbage value before its first measurement.
+            'round trip ' + (st.roundTripMs > 0 && st.roundTripMs < 10000 ? st.roundTripMs.toFixed(1) + ' ms'
+                : 'not measured yet') + '\n' +
+            'audio: ' + (st.audioGaps || 0) + ' gaps, ' + (st.audioDropped || 0) + ' dropped, lead ' +
+            (st.audioLeadMs || 0) + ' ms   longest frame gap ' + (st.maxFrameGapMs || 0) + ' ms';
     }
 
     // What the TV's player does with the frames: appended, decoded, shown.
@@ -860,18 +946,13 @@
     // most; the host ending the stream itself doesn't.
     function connectionLost(s, retryable, retryText) {
         s.ending = true;
+        clearTimeout(s.timeout);
         var retry = retryable && state.reconnects < MAX_RECONNECTS;
-        try {
-            if (retry) {
-                sessionStorage.setItem('tsl.reconnect', JSON.stringify({ip: s.ip, count: state.reconnects + 1}));
-            } else {
-                sessionStorage.setItem('tsl.message', retryable
-                    ? 'Lost the connection to ' + s.hostname + '.'
-                    : s.hostname + ' ended the stream.');
-            }
-        } catch (e) { /* not important */ }
+        s.after = retry ? {reconnect: {ip: s.ip, count: state.reconnects + 1}}
+            : {message: retryable ? 'Lost the connection to ' + s.hostname + '.' : s.hostname + ' ended the stream.'};
         showStreamStatus(retry ? retryText : 'Disconnected');
-        setTimeout(reloadPage, retry ? 1500 : 6000);
+        // The session ends by itself here (streamEnded); this is in case it doesn't.
+        scheduleEnd(s, 8000, retry ? 1500 : 6000);
     }
 
     function toggleStats() {
@@ -1238,8 +1319,24 @@
             s.connected = false;
             if (!s.ending) connectionLost(s, !!(d && d.timedOut), 'Connection lost, reconnecting…');
         });
+        tsl.on('videoFailed', function (d) {
+            var s = state.stream;
+            if (!s || s.ending) return;
+            s.ending = true;
+            clearTimeout(s.timeout);
+            s.after = {message: d.restartNeeded
+                ? 'This TV can only change the video format when the app starts. Close the app and open it again.'
+                : 'This TV could not play the stream at these settings. Try 60 fps or a lower resolution.'};
+            showStreamStatus('The TV could not play this video', false);
+            scheduleEnd(s, 8000, 6000);
+        });
         tsl.on('streamEnded', function () {
-            if (state.stream) reloadPage();
+            var s = state.stream;
+            if (!s) return;
+            // A stream that ends without the app asking: the host or the network ended it.
+            if (!s.ending) connectionLost(s, false);
+            // With a kept player, a short pause so the last status stays readable.
+            scheduleEnd(s, s.after && s.after.reconnect ? 300 : 1200, 0);
         });
         tsl.on('exitCombo', function () {
             if (!state.stream) return;
@@ -1428,6 +1525,7 @@
                 return;
             }
             mod = m;
+            state.legacyPlayer = !!(m.legacyPlayer && m.legacyPlayer());
             note('module ready, identity ' + identity.slice(5, 21));
             findLocalBroadcasts();
             mod.startDiscovery();

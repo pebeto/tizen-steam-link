@@ -12,6 +12,7 @@
 
 #include "core/counter.h"
 #include "core/session.h"
+#include "core/counter.h"
 
 #include "samsung/html/html_media_element.h"
 #include "samsung/wasm/elementary_media_stream_source.h"
@@ -27,8 +28,10 @@ namespace tsl {
 // <video> element. Video goes in as Annex-B access units; audio is decoded from Opus to
 // PCM here, as Moonlight for Tizen does.
 //
-// The source is opened once per page load, on the first VideoStart. The app reloads the
-// page after a stream ends instead of tearing the source down.
+// The source is opened once per page load, on the first VideoStart. Most TVs reload the page
+// after a stream ends. The legacy player of 2020 TVs (Tizen 5.5) can't take a reload after a
+// stream (it hung the browser on a Q74T), so there the page stays and later streams reuse the
+// tracks, which then fix the codec, HDR profile and audio until the app starts again.
 class Player : public MediaSink {
 public:
     struct Counters {
@@ -46,6 +49,12 @@ public:
         int lastAppendError = 0;
         uint64_t pipelineErrors = 0;
         int lastPipelineError = -1;
+        // Diagnostics: audio timestamp resets (audible gaps), audio lead over the clock, and
+        // the longest gap between video frames and the slowest AppendPacket since the last read.
+        uint64_t audioGaps = 0;
+        int audioLeadMs = 0;
+        int maxFrameGapMs = 0;
+        int maxAppendMs = 0;
     };
 
     // Must be constructed on the browser main thread. videoElementId names a <video>.
@@ -69,9 +78,43 @@ public:
     void AudioLost(uint32_t frames) override;
     void AudioStop() override;
 
-    Counters counters() const;
+    Counters counters();
+    // A stream needed other tracks than the ones the page set up, or setting them up failed:
+    // only a new page (app start) can play it.
+    bool restartNeeded() const { return restartNeeded_; }
+    // VideoStart has set the tracks up for this page.
+    bool setUp() const { return sourceUsed_; }
+
 
     using Seconds = samsung::wasm::Seconds;
+
+    // How far audio timestamps may drift from the wall clock. The default is 40 ms both ways:
+    // in the low latency modes the player's clock follows the timestamps appended, so audio
+    // running far ahead made video frames count as late. With 150 ms ahead allowed, an HEVC
+    // stream on a Samsung monitor (Tizen 9) dropped about 100 frames at the start, with 40 ms
+    // about 20.
+    struct AudioTiming {
+        Seconds maxBehind{0.04};   // further behind: jump forward (a gap)
+        Seconds resetLead{0};      // after a jump, start this far ahead
+        Seconds drainAbove{0.04};  // further ahead: drop one packet in drainEvery
+        unsigned drainEvery = 1;
+        Seconds maxAhead{0.04};    // further ahead: drop every packet
+    };
+    // For the legacy player of 2020 TVs (Tizen 5.5). With the default, a Q74T threw away about
+    // 1.6 s of sound a minute from a Steam Deck on Wi-Fi, in 18 gaps: each network hiccup made
+    // a gap and then dropped the burst that followed. With this, 0.6 s and 4 gaps, for about
+    // 30 ms more audio lead on average, and still no video frame dropped.
+    static AudioTiming WideAudioTiming() {
+        AudioTiming t;
+        t.maxBehind = Seconds(0.05);
+        t.resetLead = Seconds(0.04);
+        t.drainAbove = Seconds(0.08);
+        t.drainEvery = 8;
+        t.maxAhead = Seconds(0.2);
+        return t;
+    }
+    // Before the first stream.
+    void SetAudioTiming(const AudioTiming &timing) { audioTiming_ = timing; }
 
 private:
     using ReadyState = samsung::wasm::ElementaryMediaStreamSource::ReadyState;
@@ -115,7 +158,13 @@ private:
     std::mutex mutex_;
     std::condition_variable changed_;
     ReadyState sourceState_ = ReadyState::kDetached;
-    bool sourceOpened_ = false;  // once per page
+    // Set up on the first VideoStart and kept for the page: see VideoStart.
+    std::atomic<bool> sourceUsed_{false};
+    bool sourceOpened_ = false;
+    int openCodec_ = -1;
+    bool openAudio_ = false;
+    bool openMain10_ = false;
+    std::atomic<bool> restartNeeded_{false};
     std::atomic<bool> videoOpen_{false};
     std::atomic<bool> audioOpen_{false};
     std::atomic<samsung::wasm::SessionId> videoSession_{0};
@@ -131,6 +180,7 @@ private:
 
     std::chrono::steady_clock::time_point start_;
     uint32_t width_ = 0, height_ = 0, fps_ = 60;
+    uint32_t trackFps_ = 60;  // what the video track was opened with: fps_, or less if the TV refused it
     bool waitKeyframe_ = true;
     bool lostReported_ = false;
 
@@ -140,12 +190,17 @@ private:
     std::vector<int16_t> pcm_;
     int lastSamples_ = 480;  // per frame, for concealment
     Seconds audioPts_{0};
+    AudioTiming audioTiming_;
+    unsigned drainCount_ = 0;
     std::chrono::steady_clock::time_point lastAudio_;
 
     Counter64 videoAppended_{0}, videoFailed_{0}, audioAppended_{0}, audioFailed_{0}, silence_{0},
             audioDropped_{0};
     Counter64 videoSessionChanges_{0}, videoTrackCloses_{0}, pipelineErrors_{0}, audioConcealed_{0};
     std::atomic<int> lastCloseReason_{-1}, lastAppendError_{0}, lastPipelineError_{-1};
+    Counter64 audioGaps_{0};
+    std::atomic<int> audioLeadUs_{0}, maxFrameGapUs_{0}, maxAppendUs_{0};
+    std::chrono::steady_clock::time_point lastFrame_;
 };
 
 }  // namespace tsl
