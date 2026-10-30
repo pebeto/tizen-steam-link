@@ -85,7 +85,7 @@ typed it there. Steam's own on-screen keyboard in Big Picture works too.
 | Video codec | H.264, HEVC, HEVC HDR | H.264 | Steam sends HEVC only when the computer can encode it in hardware. HEVC HDR also offers HDR10, which Steam sends when the computer's display is in HDR mode. |
 | Player latency | Automatic, Low, Ultra low | Automatic | The TV player's latency mode, see [docs/how-it-works.md](docs/how-it-works.md#the-tvs-player). HEVC always uses Low. Changing it reloads the app. |
 | Quality | Automatic, Fast, Balanced, Beautiful | Balanced | Steam's own quality preference. |
-| Bandwidth limit | Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. |
+| Bandwidth limit | Adaptive, Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. Adaptive has Steam lower the bitrate when packets get lost and raise it again, up to 30 Mbit/s, as Steam's own Steam Link app does. Automatic has Steam pick a fixed bitrate. |
 | Audio | On, off | On | |
 | Start in | Big Picture, Desktop | Big Picture | |
 | Show stream statistics | Shown, hidden | Hidden | Same as the red key during a stream. |

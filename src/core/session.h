@@ -38,7 +38,7 @@ struct SessionOptions {
     bool fec = true;
     // Steam's quality preference: -1 automatic, 1 fast, 2 balanced, 3 beautiful; 0 = balanced.
     int quality = 0;
-    // Bitrate to ask for in kbit/s; 0 = 30000, -1 = let Steam decide.
+    // Bitrate to ask for in kbit/s; 0 = 30000, -1 = let Steam decide, IHS_SESSION_BITRATE_ADAPTIVE (-2) = adapt.
     int bitrateKbps = 0;
     // Largest picture to ask for; 0 leaves Steam at 1920x1080. Pass the streaming request's
     // maximum: that request alone doesn't lift the stream above 1080p.

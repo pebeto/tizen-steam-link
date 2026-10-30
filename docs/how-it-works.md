@@ -43,7 +43,9 @@ with each kind of loss like this:
 | Picture and sound stop while the computer still answers | After 15 seconds the app ends that stream and reconnects the same way. |
 
 A lower bandwidth limit helps on a busy network: Steam then makes smaller keyframes, which
-means fewer packets to lose.
+means fewer packets to lose. With Adaptive, Steam sets the bitrate itself: it lowers it when
+data gets lost and raises it again, up to 30 Mbit/s. In a Steam Deck's log the target fell to
+about 2.5 Mbit/s at each loss, so a fixed 20 Mbit/s stays the default.
 
 ## The statistics overlay
 
@@ -147,3 +149,4 @@ Each patch starts with a description of what it does and why.
 | 0023 | Checks the size of unconnected packets (Steam's MTU pings) without overflowing on 32 bits, and caps the padding a ping can ask for. |
 | 0024 | Drops an error correction shard when its message's buffer can't be allocated, instead of writing through a null pointer. |
 | 0025 | Skips empty audio codec data, in the audio and microphone channels, which led to a `memcpy` from a null pointer. |
+| 0026 | Lets the app ask for an adaptive bitrate, as Steam's own Steam Link app does. |

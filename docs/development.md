@@ -109,7 +109,7 @@ tsl-cli stream <ip> --seconds 20 --out /tmp/stream
 | `--no-audio` | Stream without sound. |
 | `--max 1920x1080` | The largest picture to ask for. |
 | `--quality auto\|fast\|balanced\|beautiful` | Steam's quality preference. |
-| `--bitrate KBPS` | The bitrate; -1 lets Steam decide. |
+| `--bitrate KBPS` | The bitrate; -1 lets Steam pick a fixed one, -2 lets it adapt to the network. |
 | `--fps N` | The frame rate to ask for. |
 | `--no-fec` | Turn off error correction. |
 | `--big-picture` | Open Big Picture instead of the desktop. |

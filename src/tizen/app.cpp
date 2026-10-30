@@ -590,7 +590,8 @@ bool Pair(const std::string &ip, const std::string &pin) { return g_app->Pair(ip
 void CancelPair() { g_app->CancelPair(); }
 
 // quality: Steam's preference (-1 automatic, 1 fast, 2 balanced, 3 beautiful). bitrateKbps: -1 lets
-// Steam decide. fps: 60 or 120. hdr: offer HDR10, which comes as HEVC, so it turns hevc on too.
+// Steam decide, -2 lets it adapt. fps: 60 or 120. hdr: offer HDR10, which comes as HEVC, so it turns
+// hevc on too.
 bool StartStream(const std::string &ip, const std::string &steamId, const std::string &keyHex, int maxWidth,
                  int maxHeight, bool hevc, bool audio, bool bigPicture, int quality, int bitrateKbps, int fps,
                  bool hdr) {
