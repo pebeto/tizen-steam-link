@@ -5,8 +5,8 @@
 
 namespace tsl {
 
-// Tizen 5.5's ARM WebAssembly compiler crashes on i64.atomic instructions, even
-// before main() runs. Keep the full 64-bit statistics behind a mutex, whose
+// Tizen 5.5's ARM WebAssembly compiler hangs on i64.atomic instructions, before
+// main() runs. Keep the full 64-bit statistics behind a mutex, whose
 // Emscripten implementation uses supported 32-bit atomics. Never call platform
 // APIs or proxy to the browser thread while holding this lock.
 class Counter64 {

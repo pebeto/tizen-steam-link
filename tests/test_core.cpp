@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "core/client.h"
+#include "core/counter.h"
 #include "core/gamepad.h"
 #include "core/identity.h"
 #include "core/keymap.h"
@@ -1038,6 +1039,38 @@ void TestRetransmissionCancelRacesTimer() {
     IHS_SessionDestroy(session);
 }
 
+// The statistics counters, without the i64.atomic instructions that hang Tizen 5.5: writers
+// and a reader at once, across the 32-bit boundary, so 32-bit storage can't pass. CHECK isn't
+// thread-safe, so the reader only records what it saw.
+void TestCounter64() {
+    const uint64_t initial = (uint64_t{1} << 32) - 10;
+    tsl::Counter64 counter(initial);
+    std::atomic<bool> done{false};
+    bool monotonic = true;
+    std::thread reader([&] {
+        uint64_t previous = initial;
+        while (!done) {
+            uint64_t current = counter.load();
+            if (current < previous) monotonic = false;
+            previous = current;
+        }
+    });
+    std::vector<std::thread> writers;
+    for (int t = 0; t < 4; t++) {
+        writers.emplace_back([&] {
+            for (int i = 0; i < 50000; i++) counter += 3;
+        });
+    }
+    for (auto &thread : writers) thread.join();
+    done = true;
+    reader.join();
+    uint64_t expected = initial + 4 * 50000 * 3;
+    CHECK(monotonic);
+    CHECK_EQ(counter.load(), expected);
+    CHECK_EQ(counter++, expected);
+    CHECK_EQ(++counter, expected + 2);
+}
+
 }  // namespace
 
 int main() {
@@ -1065,6 +1098,7 @@ int main() {
     TestUnconnectedPingSizes();
     TestAudioEmptyCodecData();
     TestWakePacket();
+    TestCounter64();
     IHS_Quit();
     std::printf("%d checks, %d failures\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
