@@ -50,6 +50,9 @@ struct SessionOptions {
     // Offer HDR10. Steam sends it, as 10-bit HEVC, when the host's display is in HDR, so it only
     // takes effect together with hevc. Set StreamRequest::hdr too.
     bool hdr = false;
+    // After a lost video frame, go on decoding the frames that follow (the picture may smear)
+    // instead of dropping them until a keyframe arrives.
+    bool keepPlayingAfterLoss = false;
 };
 
 struct SessionStats {
@@ -89,6 +92,9 @@ public:
         virtual void OnSessionDisconnected() {}
         // Last callback; the session threads are about to exit.
         virtual void OnSessionFinalized() {}
+        // The player could not start the video (a format the TV refuses). Runs on an ihslib
+        // thread: disconnect from elsewhere.
+        virtual void OnVideoFailed() {}
         virtual void OnCursorShown(float x, float y) { (void) x, (void) y; }
         virtual void OnCursorHidden() {}
     };

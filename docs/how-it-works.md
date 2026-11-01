@@ -34,7 +34,7 @@ with each kind of loss like this:
 | What goes wrong | What the app does |
 |---|---|
 | A few video packets are lost | Steam sends parity packets with each video message, and the app rebuilds a message that lost up to that many. The format isn't documented; `session/fec.h` in the FEC patch describes it as worked out from captured traffic. |
-| A video frame is lost anyway | The app skips it as soon as a later frame is complete, and asks Steam for a keyframe. It asks again every 200 ms until one arrives (Steam's own client asks every 100 ms). |
+| A video frame is lost anyway | The app skips it as soon as a later frame is complete, and asks Steam for a keyframe. It asks again every 200 ms until one arrives (Steam's own client asks every 100 ms). With After lost video packets on Keep playing, the default on 2020 TVs, the app tells Steam about the loss and goes on decoding instead: the picture may smear until the keyframe arrives, but it doesn't freeze. |
 | A keyframe arrives as a burst | A keyframe is a few hundred packets at once. The stream's socket asks for a 4 MB receive buffer, since the usual 200 KB or so drops whatever doesn't fit. |
 | An audio packet is lost | The Opus decoder makes up the missing sound, for gaps of up to 80 ms. |
 | A control message is lost | Control messages are resent every 10 ms until Steam confirms them, up to 20 times. The app's own confirmations are cumulative, as Steam expects. |
@@ -62,6 +62,7 @@ with a simulated computer.
 | `FEC: ... rebuilt, ... lost` | Messages rebuilt from parity packets, and messages lost anyway. |
 | `keyframe requests` | How often the app asked Steam for a keyframe. |
 | `round trip` | The time from a control message to Steam's confirmation. |
+| `audio: ... gaps, ... dropped, lead`, `longest frame gap` | How often the sound fell behind and jumped ahead, sound frames dropped for running too far ahead, how far the sound runs ahead of the clock, and the longest wait between two video frames over the last second. |
 | `player: appended, decoded, dropped, time, ready` | What the TV's player did with the frames. |
 | `sessions, closes, append error, pipeline errors` | Problems the TV's player reported. |
 | `audio: ... frames, ... lost ones filled in` | Sound frames passed to the player, and lost ones the decoder filled in. |
@@ -89,9 +90,25 @@ with or without HDR, as on the monitor. H.264 plays in the ultra low latency mod
 On TVs from before 2022, which don't read `use.game.mode`, the ultra low latency mode is what
 turns Game Mode on, so Low leaves it off.
 
-The player takes its mode when it starts, so the page reloads when the codec or the Player
-latency setting changes. It also reloads after every stream, which gives each stream a fresh
-player.
+The player takes its mode when it starts, so the page reloads when a change to the codec or the
+Player latency setting changes the mode. It also reloads after every stream, which gives each
+stream a fresh player.
+
+2020 TVs (Tizen 5.5) have an older player, and work differently:
+
+- On a Samsung Q74T, reloading the page after a stream hung it, and the TV then closed the app.
+  So on these TVs the app goes back to the list after a stream, and later streams reuse the
+  player, as Moonlight for Tizen does.
+- That player can't change its tracks within a page. The first stream sets the codec, the HDR
+  profile and the sound on or off until the app starts again, and changing those settings shows
+  a message saying so.
+- The sound may run further ahead of the clock: above 80 ms one sound frame in eight is dropped
+  to work the backlog off, and only above 200 ms every one. With the 40 ms the other TVs allow,
+  the Q74T dropped about 1.6 s of sound a minute, in 18 gaps.
+
+When the TV refuses the video track the app asks for, the app tries lower levels and then 60
+fps: the Q74T refuses the H.264 level 5.2 track the app asks for at 1080p and 120 fps. If the TV
+takes none, the stream ends with a message instead of waiting for the connection to time out.
 
 On a Samsung S90C, whose panel runs at 144 Hz, the app showed at most about 60 frames per
 second. A 120 fps stream was decoded in full, and about half its frames were dropped.
@@ -147,3 +164,5 @@ Each patch starts with a description of what it does and why.
 | 0023 | Checks the size of unconnected packets (Steam's MTU pings) without overflowing on 32 bits, and caps the padding a ping can ask for. |
 | 0024 | Drops an error correction shard when its message's buffer can't be allocated, instead of writing through a null pointer. |
 | 0025 | Skips empty audio codec data, in the audio and microphone channels, which led to a `memcpy` from a null pointer. |
+| 0027 | Lets the video go on after a lost frame, reporting the loss, instead of freezing until a keyframe arrives (the "After lost video packets" setting). |
+| 0028 | Skips a round trip sample that comes out negative, which showed as 65535996 ms. |

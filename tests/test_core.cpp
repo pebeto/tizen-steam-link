@@ -970,6 +970,43 @@ void TestAudioEmptyCodecData() {
     IHS_SessionDestroy(session);
 }
 
+// The round trip runs from a reliable packet's send timestamp to its ACK. A sample that comes out
+// negative is skipped: as a uint32_t, one of about -4 ms showed as 65535996 ms on a Q74T.
+void TestRoundTripSkipsNegativeSamples() {
+    uint8_t random[tsl::Identity::kRandomBytes] = {4};
+    tsl::Identity id = tsl::Identity::FromRandom(random, "test");
+    IHS_ClientConfig config = id.ClientConfig();
+    tsl::HostKey key{};
+    config.secretKey = key.data();
+    IHS_SessionInfo info{};
+    IHS_IPAddressFromString(&info.address.ip, "127.0.0.1");
+    info.address.port = 27031;
+    info.sessionKeyLen = 32;
+    IHS_Session *session = IHS_SessionCreate(&config, &info);
+    // Queues a packet stamped at sendTimestamp, acknowledges it, and returns the round trip.
+    auto ack = [&](uint16_t packetId, uint32_t sendTimestamp) {
+        IHS_SessionPacket packet{};
+        packet.header.type = IHS_SessionPacketTypeReliable;
+        packet.header.channelId = IHS_SessionChannelIdControl;
+        packet.header.packetId = packetId;
+        packet.header.sendTimestamp = sendTimestamp;
+        IHS_SessionPacketBodyInitialize(&packet.body, false);
+        const uint8_t payload[1] = {0};
+        IHS_BufferAppendMem(&packet.body, payload, sizeof(payload));
+        CHECK(IHS_RetransmissionQueue(&session->retransmission, &packet));
+        IHS_SessionPacketClear(&packet, true);
+        CHECK(IHS_RetransmissionCancel(&session->retransmission, IHS_SessionChannelIdControl, packetId, 0));
+        return IHS_SessionCounterGet(session->counters.roundTrip);
+    };
+    // 4 ms after now (262 units of 1/65536 s): negative, so still not measured.
+    CHECK_EQ(ack(1, IHS_SessionPacketTimestamp() + 262), 0u);
+    // 10 ms ago: measured, at 10 ms plus however long this took.
+    uint32_t roundTrip = ack(2, IHS_SessionPacketTimestamp() - 655);
+    CHECK(roundTrip >= 655 && roundTrip < 655 + 6554);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    IHS_SessionDestroy(session);
+}
+
 // A reliable packet waits for its ACK, and its timer sends it again after 10 ms. On Wi-Fi the
 // round trip is about that long, so an ACK often lands while the timer fires; with a controller
 // sending 250 reliable reports a second that happens constantly. Cancelling used to free the
@@ -1094,6 +1131,7 @@ int main() {
     TestFec();
     TestDataChannelGetsPastLostPacket();
     TestRetransmissionCancelRacesTimer();
+    TestRoundTripSkipsNegativeSamples();
     TestSilenceMs();
     TestUnconnectedPingSizes();
     TestAudioEmptyCodecData();

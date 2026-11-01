@@ -1,0 +1,109 @@
+Let the video go on after a lost frame instead of freezing until a keyframe.
+
+After a sequence gap the video channel requests a keyframe and drops every frame until one
+arrives, asking again every 200 ms. From a Steam Deck on Wi-Fi to a Samsung Q74T (Tizen 5.5,
+TV on Ethernet), a 1080p keyframe at 30 Mbit/s spans hundreds of packets and often lost one
+itself, so it was discarded too and the wait started over: the picture froze for 10 to 50 s
+at a time, with dozens of requests and no complete keyframe in between.
+
+With IHS_SessionConfig.keepPlayingAfterLoss set, a gap (or partial frames that stall) reports
+the loss to the host, at most every 200 ms, and the following frames go on to the decoder. The
+picture may smear until the host's keyframe lands, but it keeps moving. It is off by default,
+which keeps the old behaviour; a decoder reset requested by the app still waits for a keyframe.
+
+diff --git a/include/ihslib/session.h b/include/ihslib/session.h
+index d259f66..9d033d9 100644
+--- a/include/ihslib/session.h
++++ b/include/ihslib/session.h
+@@ -66,6 +66,11 @@ typedef struct IHS_SessionConfig {
+      * says which colorspace it chose. Set the streaming request's displayHdr too.
+      */
+     bool enableHdr;
++    /**
++     * After a lost video frame, report the loss and go on decoding the frames that follow, instead
++     * of dropping them until a keyframe comes. The picture may smear until the keyframe lands.
++     */
++    bool keepPlayingAfterLoss;
+ } IHS_SessionConfig;
+ 
+ typedef struct IHS_StreamSessionCallbacks {
+diff --git a/src/session/channels/ch_control_negotiation.c b/src/session/channels/ch_control_negotiation.c
+index 2c5cb45..f0bd6b3 100644
+--- a/src/session/channels/ch_control_negotiation.c
++++ b/src/session/channels/ch_control_negotiation.c
+@@ -84,6 +84,7 @@ static void OnNegotiationInit(IHS_SessionChannel *channel, const CNegotiationIni
+     if (session->callbacks.session && session->callbacks.session->configuring) {
+         session->callbacks.session->configuring(session, &ihsConf, session->callbackContexts.session);
+     }
++    session->keepPlayingAfterLoss = ihsConf.keepPlayingAfterLoss;
+ 
+     EStreamAudioCodec audioCodec = k_EStreamAudioCodecNone;
+     EStreamVideoCodec videoCodec = k_EStreamVideoCodecNone;
+diff --git a/src/session/channels/video/ch_data_video.c b/src/session/channels/video/ch_data_video.c
+index 3d26c65..3761e3f 100644
+--- a/src/session/channels/video/ch_data_video.c
++++ b/src/session/channels/video/ch_data_video.c
+@@ -51,6 +51,7 @@ typedef struct IHS_SessionChannelVideo {
+         uint16_t lastFrameId;
+         uint16_t frameCounter;
+         uint64_t waitingKeyFrame;
++        uint64_t lastLossReport;
+         uint64_t lastStatsTime;
+         bool frameStarted;
+         bool frameFinished;
+@@ -144,6 +145,16 @@ static const IHS_SessionChannelDataClass ChannelClass = {
+         .stop = DataStop,
+ };
+ 
++// Without waiting for a keyframe: tell the host about the loss, at most every 200 ms (the retry
++// interval of the waiting mode), and go on with the frames that follow.
++static void ReportLossNoWait(IHS_SessionChannel *channel) {
++    IHS_SessionChannelVideo *videoCh = (IHS_SessionChannelVideo *) channel;
++    uint64_t now = IHS_TimerNow();
++    if (videoCh->states.lastLossReport != 0 && now - videoCh->states.lastLossReport < 200) return;
++    videoCh->states.lastLossReport = now;
++    IHS_SessionChannelDataLost(channel);
++}
++
+ static const uint8_t EmptyIV[16] = {
+         0, 0, 0, 0, 0, 0, 0, 0,
+         0, 0, 0, 0, 0, 0, 0, 0,
+@@ -241,7 +252,12 @@ static void DataReceived(IHS_SessionChannel *channel, const IHS_SessionDataFrame
+             videoCh->states.waitingKeyFrame = IHS_TimerNow();
+         }
+     } else if (vhead.sequence != videoCh->states.expectedSequence) {
+-        if (videoCh->states.waitingKeyFrame == 0) {
++        if (channel->session->keepPlayingAfterLoss) {
++            IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
++                           "Unexpected video frame sequence %u (expect %u), reporting the loss", vhead.sequence,
++                           videoCh->states.expectedSequence);
++            ReportLossNoWait(channel);
++        } else if (videoCh->states.waitingKeyFrame == 0) {
+             IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+                            "Unexpected video frame sequence %u (expect %u), request keyframe", vhead.sequence,
+                            videoCh->states.expectedSequence);
+@@ -383,6 +399,11 @@ static void CheckPartialOverflow(IHS_SessionChannel *channel) {
+     }
+     IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Video",
+                    "Partial frames stalled for %u ms, request keyframe", span * 1000 / 65536);
++    if (channel->session->keepPlayingAfterLoss) {
++        DiscardPending(videoCh);
++        ReportLossNoWait(channel);
++        return;
++    }
+     IHS_SessionChannelDataLost(channel);
+     videoCh->states.waitingKeyFrame = IHS_TimerNow();
+ }
+diff --git a/src/session/session_pri.h b/src/session/session_pri.h
+index 9b6d772..aa1a561 100644
+--- a/src/session/session_pri.h
++++ b/src/session/session_pri.h
+@@ -111,6 +111,8 @@ struct IHS_Session {
+     /* Liveness: IHS_TimerNow() of the last packet received (low 32 bits), checked every second. */
+     uint32_t lastReceivedMs;
+     bool timedOut;
++    /* IHS_SessionConfig.keepPlayingAfterLoss, from the negotiation. */
++    bool keepPlayingAfterLoss;
+     IHS_TimerTask *livenessTask;
+     struct {
+         const IHS_StreamSessionCallbacks *session;
