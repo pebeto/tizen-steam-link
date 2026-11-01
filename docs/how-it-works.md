@@ -22,9 +22,13 @@ feeds the picture and sound to the TV's hardware decoder. The TV side follows th
    Sound comes as Opus, which the module decodes to PCM.
 5. The module hands video and sound to the TV's player, Samsung's
    ElementaryMediaStreamSource, on a `<video>` element.
-6. Controllers are read from the browser's Gamepad API 250 times a second and reach Steam as
-   generic gamepads, with the same 48-byte report as ihslib's SDL backend. Keyboard and mouse
-   events go through too.
+6. Controllers are read from the browser's Gamepad API 250 times a second and reach Steam with
+   the same 48-byte report as ihslib's SDL backend. The app also tells Steam each controller's
+   type (DualSense, DualShock 4, Xbox 360, Xbox One and Series, Switch Pro, or generic for the
+   rest), so Big Picture shows the right button prompts. The type follows the vendor and product
+   IDs. Samsung TVs report only the controller's name, so there the app matches well-known
+   names, and Sony's Bluetooth name "Wireless Controller" counts as a DualSense. Keyboard and
+   mouse events go through too.
 
 ## Getting through Wi-Fi
 
@@ -44,6 +48,10 @@ with each kind of loss like this:
 
 A lower bandwidth limit helps on a busy network: Steam then makes smaller keyframes, which
 means fewer packets to lose.
+
+If the WebAssembly module crashes during a stream, the app stops calling into it, since the
+crashed thread may still hold one of its locks and the next call would hang the page. It
+reloads the page for a fresh module and reconnects, as it does when the computer goes silent.
 
 ## The statistics overlay
 

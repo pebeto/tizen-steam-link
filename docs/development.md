@@ -19,9 +19,15 @@ scripts/build-tizen.sh
 The first run builds a toolchain image of about 2 GB, with Tizen Studio 5.6 (command line
 only) and Samsung's Emscripten 1.39.4.7. The result is `out/TizenSteamLink.wgt`, signed with
 a throwaway Tizen author certificate made inside the image. On Tizen 7 and later,
-Apps2Samsung re-signs it for the TV. The build also runs `scripts/check-tizen-build.py`, which
-looks for problems that only show up on the TV, such as a thread or timer callback with a
-signature the WebAssembly build can't call.
+Apps2Samsung re-signs it for the TV. Tizen Studio and Samsung's Emscripten are x86-64 only, so
+the script builds and runs the image as `linux/amd64`; on an Apple Silicon Mac it runs under
+emulation.
+
+The build also runs `scripts/check-tizen-build.py`, which looks for problems that only show up
+on the TV. One is a thread or timer callback with a signature the WebAssembly build can't call.
+Another is a 64-bit atomic instruction: Tizen 5.5's WebAssembly compiler hangs on those before
+the app starts. `std::atomic<uint64_t>` makes them, so 64-bit counters use `Counter64` from
+`src/core/counter.h` instead.
 
 CMake downloads ihslib and applies `patches/ihslib` to it. After changing a patch, delete the
 patched copy so the next build downloads it again, then build as usual:
@@ -33,9 +39,11 @@ rm -rf build/{desktop,tizen}/_deps/ihslib-{src,build,subbuild}
 ## Tests
 
 `tests/test_core.cpp` covers the shared code and the patched parts of ihslib: the device
-identity and PIN, keyboard and gamepad mapping, a probe against a fake host, the packet
-window, error correction (against an independent encoder), lost audio frames, the
-retransmission race, and Wake-on-LAN packets.
+identity and PIN, keyboard and gamepad mapping, controller types from IDs and from names, a
+probe against a fake host, the packet window, error correction (against an independent
+encoder), lost audio frames, the retransmission race, round trip samples, the silence check,
+size checks on Steam's MTU pings, empty audio codec data, Wake-on-LAN packets, and
+`Counter64` with several threads writing at once.
 
 To run them under AddressSanitizer and UndefinedBehaviorSanitizer:
 
@@ -81,9 +89,9 @@ python3 -m http.server -d web 8000
 
 Open `http://localhost:8000/index.html?mock` at 1920x1080. With `?mock` the page uses
 `web/dev/mock.js` instead of the WebAssembly module. The mock fakes two computers, pairing
-and a stream. The arrow keys, Enter and Escape stand in for the remote. Setting
-`window.tslMockFrozen = true` in the console freezes the fake stream, which shows the app
-reconnecting after 15 seconds.
+and a stream, whose statistics follow the codec setting, HDR included. The arrow keys, Enter
+and Escape stand in for the remote. Setting `window.tslMockFrozen = true` in the console
+freezes the fake stream, which shows the app reconnecting after 15 seconds.
 
 ![The interface in the browser preview](images/home.png)
 
