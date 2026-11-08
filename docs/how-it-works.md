@@ -150,3 +150,4 @@ Each patch starts with a description of what it does and why.
 | 0024 | Drops an error correction shard when its message's buffer can't be allocated, instead of writing through a null pointer. |
 | 0025 | Skips empty audio codec data, in the audio and microphone channels, which led to a `memcpy` from a null pointer. |
 | 0026 | Lets the app ask for an adaptive bitrate, as Steam's own Steam Link app does. |
+| 0029 | Sends the frame and network stats Steam's bitrate control needs to raise the bitrate again after a loss. |

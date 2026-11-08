@@ -53,6 +53,7 @@ FetchContent_Declare(ihslib
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0024-fec-allocation-failure.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0025-audio-empty-codec-data.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0026-adaptive-bitrate.patch
+              COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0029-frame-stats-for-bitrate-control.patch
         SOURCE_SUBDIR no-cmake)
 
 # protobuf-c runtime only; the generated .pb-c.c files ship with ihslib.
