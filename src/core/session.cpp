@@ -169,10 +169,12 @@ void Session::CbConfiguring(IHS_Session *, IHS_SessionConfig *config, void *cont
     config->maxHeight = self->options_.maxHeight;
     config->maxFramerate = self->options_.maxFramerate;
     config->enableHdr = self->options_.hdr && config->enableHevc;  // HDR10 comes as HEVC
+    config->keepPlayingAfterLoss = self->options_.keepPlayingAfterLoss;
     Log(IHS_LogLevelInfo, "Session",
-        "Negotiating: audio=%d hevc=%d hdr=%d fec=%d quality=%d bitrate=%d max=%dx%d@%d", config->enableAudio,
-        config->enableHevc, config->enableHdr, config->enableFec, config->quality, config->bitrateKbps,
-        config->maxWidth, config->maxHeight, config->maxFramerate);
+        "Negotiating: audio=%d hevc=%d hdr=%d fec=%d quality=%d bitrate=%d max=%dx%d@%d keepPlaying=%d",
+        config->enableAudio, config->enableHevc, config->enableHdr, config->enableFec, config->quality,
+        config->bitrateKbps, config->maxWidth, config->maxHeight, config->maxFramerate,
+        config->keepPlayingAfterLoss);
 }
 
 void Session::CbConnected(IHS_Session *session, void *context) {
@@ -200,7 +202,9 @@ int Session::CbVideoStart(IHS_Session *, const IHS_StreamVideoConfig *config, vo
     self->colorspace_ = config->colorspace;
     Log(IHS_LogLevelInfo, "Session", "Video start: codec=%d %ux%u colorspace=%d", config->codec, config->width,
         config->height, config->colorspace);
-    return self->media_->VideoStart(*config);
+    int result = self->media_->VideoStart(*config);
+    if (result != 0) self->listener_->OnVideoFailed();
+    return result;
 }
 
 IHS_StreamVideoSubmitResult Session::CbVideoSubmit(IHS_Session *, IHS_Buffer *data, IHS_StreamVideoFrameFlag flags,

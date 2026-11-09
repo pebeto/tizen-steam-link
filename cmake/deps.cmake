@@ -21,8 +21,9 @@ endif ()
 # silent host, frame rates above 59.94, a streaming request that can ask for Big Picture, a
 # use-after-free when an ACK meets its retransmit timer, data channels that start over after a
 # gap longer than their window, HDR, a race in the silence check, size checks for unconnected
-# packets that hold on 32 bits, FEC allocation failures and empty audio codec data, and an adaptive
-# bitrate; each patch starts with a description.
+# packets that hold on 32 bits, FEC allocation failures, empty audio codec data, an adaptive
+# bitrate, video that can go on after a lost frame, a round trip that skips negative samples,
+# and the frame stats Steam's bitrate control needs; each patch starts with a description.
 # (0003, logging for the pairing request, was dropped once pairing worked on the TV.)
 set(TSL_IHSLIB_PATCHES ${CMAKE_CURRENT_LIST_DIR}/../patches/ihslib)
 FetchContent_Declare(ihslib
@@ -53,6 +54,8 @@ FetchContent_Declare(ihslib
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0024-fec-allocation-failure.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0025-audio-empty-codec-data.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0026-adaptive-bitrate.patch
+              COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0027-keep-playing-after-loss.patch
+              COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0028-round-trip-negative-sample.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0029-frame-stats-for-bitrate-control.patch
         SOURCE_SUBDIR no-cmake)
 

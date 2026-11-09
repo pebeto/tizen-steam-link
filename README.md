@@ -64,6 +64,9 @@ During a stream every other button goes to the game. Keyboards and mice plugged 
 work as they would on the computer; click the picture to capture the mouse. A controller
 buzzes briefly when the TV first sees it.
 
+The app tells Steam when a controller is a PlayStation, Xbox or Switch Pro controller, so Big
+Picture and games show its button prompts. Other controllers reach Steam as generic gamepads.
+
 ## The stream menu
 
 Hold Back during a stream to bring up the menu. While it is open, the remote and the
@@ -81,16 +84,18 @@ typed it there. Steam's own on-screen keyboard in Big Picture works too.
 | Setting | Choices | Default | Notes |
 |---|---|---|---|
 | Maximum resolution | 720p, 1080p, 1440p, 4K | 1080p | For 4K, use HEVC and a bandwidth limit of 50 Mbit/s or more. |
-| Frame rate | 60 or 120 fps | 60 | On a Samsung S90C the app showed about 60 frames per second even at 120. |
+| Frame rate | 60 or 120 fps | 60 | If the TV refuses 120 fps, the app sets up the TV's player for 60 instead. On a Samsung S90C the app showed about 60 frames per second even at 120. |
 | Video codec | H.264, HEVC, HEVC HDR | H.264 | Steam sends HEVC only when the computer can encode it in hardware. HEVC HDR also offers HDR10, which Steam sends when the computer's display is in HDR mode. |
-| Player latency | Automatic, Low, Ultra low | Automatic | The TV player's latency mode, see [docs/how-it-works.md](docs/how-it-works.md#the-tvs-player). HEVC always uses Low. Changing it reloads the app. |
+| Player latency | Automatic, Low, Ultra low | Automatic | The TV player's latency mode, see [docs/how-it-works.md](docs/how-it-works.md#the-tvs-player). HEVC always uses Low. Changing it reloads the app if that changes the latency mode. |
 | Quality | Automatic, Fast, Balanced, Beautiful | Balanced | Steam's own quality preference. |
 | Bandwidth limit | Adaptive, Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. Adaptive has Steam lower the bitrate when packets get lost and raise it again, up to 30 Mbit/s, as Steam's own Steam Link app does. Automatic has Steam pick a fixed bitrate. |
 | Audio | On, off | On | |
 | Start in | Big Picture, Desktop | Big Picture | |
+| After lost video packets | Automatic, Keep playing, Wait for a clean picture | Automatic | Automatic keeps playing on 2020 TVs (Tizen 5.5) and waits on the others. Keep playing may smear the picture for a moment after a lost packet. Waiting froze it for 10 to 50 s at a time on a Q74T streaming from a Steam Deck on Wi-Fi, when the keyframe lost a packet too. |
 | Show stream statistics | Shown, hidden | Hidden | Same as the red key during a stream. |
 
-Changes apply to the next stream.
+Changes apply to the next stream. On 2020 TVs (Tizen 5.5), the first stream sets the video
+codec and audio until the app is opened again.
 
 ## When the connection drops
 
@@ -123,6 +128,8 @@ safer choice on Wi-Fi.
 | The app stops opening after a TV update | The update turned Developer Mode off. Turn it on again and reinstall, as in [docs/install.md](docs/install.md). |
 | "This TV can't run the streaming part of the app" | The TV is older than Tizen 5.5 (a 2019 model or earlier), and the app can't run on it. |
 | "The streaming part of the app hasn't started" | Restart the TV fully by holding the power button, then open the app again. |
+| "This TV could not play the stream at these settings" | The TV refused the video. Try 60 fps or a lower resolution. On a 2020 TV (Tizen 5.5), also close the app and open it again. |
+| "This TV can only change the video format when the app starts" | 2020 TVs (Tizen 5.5) keep the video codec and audio of the first stream. Close the app and open it again. |
 | Anything else | Press the blue key to see the app's log. |
 
 ## More

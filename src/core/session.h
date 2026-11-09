@@ -5,6 +5,7 @@
 #include <cstdint>
 
 #include "core/client.h"
+#include "core/counter.h"
 #include "core/gamepad.h"
 #include "core/identity.h"
 #include "core/ihs.h"
@@ -49,6 +50,9 @@ struct SessionOptions {
     // Offer HDR10. Steam sends it, as 10-bit HEVC, when the host's display is in HDR, so it only
     // takes effect together with hevc. Set StreamRequest::hdr too.
     bool hdr = false;
+    // After a lost video frame, go on decoding the frames that follow (the picture may smear)
+    // instead of dropping them until a keyframe arrives.
+    bool keepPlayingAfterLoss = false;
 };
 
 struct SessionStats {
@@ -88,6 +92,9 @@ public:
         virtual void OnSessionDisconnected() {}
         // Last callback; the session threads are about to exit.
         virtual void OnSessionFinalized() {}
+        // The player could not start the video (a format the TV refuses). Runs on an ihslib
+        // thread: disconnect from elsewhere.
+        virtual void OnVideoFailed() {}
         virtual void OnCursorShown(float x, float y) { (void) x, (void) y; }
         virtual void OnCursorHidden() {}
     };
@@ -150,7 +157,7 @@ private:
     bool joined_ = false;
     std::atomic<bool> connected_{false};
 
-    std::atomic<uint64_t> videoFrames_{0}, keyFrames_{0}, videoBytes_{0}, audioPackets_{0}, audioBytes_{0};
+    Counter64 videoFrames_{0}, keyFrames_{0}, videoBytes_{0}, audioPackets_{0}, audioBytes_{0};
     std::atomic<uint32_t> width_{0}, height_{0};
     std::atomic<int> videoCodec_{IHS_StreamVideoCodecNone}, audioCodec_{IHS_StreamAudioCodecNone};
     std::atomic<int> colorspace_{IHS_StreamVideoColorspaceUnknown};
