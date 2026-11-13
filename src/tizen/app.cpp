@@ -635,7 +635,8 @@ bool Pair(const std::string &ip, const std::string &pin) { return g_app->Pair(ip
 void CancelPair() { g_app->CancelPair(); }
 
 // quality: Steam's preference (-1 automatic, 1 fast, 2 balanced, 3 beautiful). bitrateKbps: -1 lets
-// Steam decide. fps: 60 or 120. hdr: offer HDR10, which comes as HEVC, so it turns hevc on too.
+// Steam decide, -2 lets it adapt. fps: 60 or 120. hdr: offer HDR10, which comes as HEVC, so it turns
+// hevc on too.
 // keepPlaying: after a lost video frame, go on decoding (a moment of smeared picture) instead of
 // dropping every frame until a complete keyframe. From a Steam Deck on Wi-Fi to a Q74T, a 1080p
 // keyframe at 30 Mbit/s often lost a packet too, and waiting froze the picture for 10 to 50 s.

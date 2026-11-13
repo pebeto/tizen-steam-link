@@ -1,0 +1,184 @@
+Send the frame stats Steam's bitrate control needs.
+
+Nothing in the app reported a frame as displayed, so the 1 Hz flush never had a frame to fold and
+ihslib never sent a CFrameStatsListMsg: a Steam Deck's streaming_log.txt shows every Avg* of
+SessionStats at 0. Steam's dynamicbitrate then ran without the client's link bandwidth (stat 17,
+the "inst" it logs): in steamui.so a 0 there leaves its link estimate unfed, and after a loss the
+target sat at about 4 Mbit/s. With stat 17 the link estimate moves to 0.8 x max(inst, 15 Mbit/s).
+
+- A frame the decoder takes is reported displayed, any other dropped (decode corrupt). Without
+  this the drain reported every frame dropped late, and the host cut the frame rate to 30.
+- Ping (14), server and client bitrate (15, 16), link bandwidth (17) and packet loss (18) go with
+  each flush, from the session counters; the bitrates count the video bytes received, and the
+  loss counts FEC shards too, as IHS_SessionGetStreamStats does.
+- The flush goes out even when no frame was folded.
+- Network duration (stat 6) is no longer sent: it subtracted the host's send time from the
+  client's receive time, two different clocks, and the host logged "Slow framerate" with network
+  at about 60000000 ms.
+
+With 5% loss for 20 s from a Steam Deck, the target went back to about 12 Mbit/s 7 to 10 s after
+the loss stopped, on tsl-cli and on a QN90D. Without this patch it stayed at about 4 Mbit/s.
+
+--- a/include/ihslib/session.h
++++ b/include/ihslib/session.h
+@@ -208,10 +208,9 @@
+ 
+ /**
+  * Report the final outcome of a video frame (displayed or one of the drop
+- * categories). Must be called exactly once per frame the application
+- * processed, AFTER any IHS_SessionReportVideoFrameStage calls for it. This is
+- * what advances the "last displayed" cursor that the 1 Hz flush walks; if
+- * skipped, the host never gets stats for that frame.
++ * categories), AFTER any IHS_SessionReportVideoFrameStage calls for it. ihslib
++ * already reports each frame it hands to the decoder, as displayed when the
++ * decoder takes it; call this to report a different outcome.
+  *
+  * Safe to call from any thread.
+  */
+--- a/src/session/session_pri.h
++++ b/src/session/session_pri.h
+@@ -80,6 +80,7 @@
+ typedef struct IHS_SessionCounters {
+     uint32_t videoPackets;
+     uint32_t videoPacketsLost;
++    uint32_t videoBytes;
+     uint32_t lostReports;
+     /* Smoothed round trip, in packet timestamp units (1/65536 s); 0 until measured. */
+     uint32_t roundTrip;
+--- a/src/session/frame_stats.h
++++ b/src/session/frame_stats.h
+@@ -88,6 +88,10 @@
+     uint16_t lastDisplayedFrameId;
+     uint32_t lastFrameTimestamp;    /* event 18 of the previous *completed* frame */
+     bool fullReporting;             /* mirrors CStreamClient::sendFullFrameStats */
++    uint64_t lastNetworkSampleMs;
++    uint32_t lastBytes;
++    uint32_t lastPackets;
++    uint32_t lastPacketsLost;
+ } IHS_FrameStatsAggregator;
+ 
+ IHS_FrameStatsAggregator *IHS_FrameStatsAggregatorCreate(void);
+@@ -141,3 +145,11 @@
+ size_t IHS_FrameStatsAggregatorDrain(IHS_FrameStatsAggregator *agg, uint16_t *outLatestFrameId);
+ 
+ void IHS_FrameStatsAccumulatorReset(IHS_FrameStatsAccumulator *accum);
++
++/**
++ * Adds the network stats Steam's own client sends with each CFrameStatsListMsg: ping, bitrate and
++ * packet loss since the previous call. roundTrip is in 1/65536 s, 0 when not measured yet; bytes,
++ * packets and packetsLost are running totals.
++ */
++void IHS_FrameStatsAddNetworkSample(IHS_FrameStatsAggregator *agg, uint64_t nowMs, uint32_t roundTrip,
++                                    uint32_t bytes, uint32_t packets, uint32_t packetsLost);
+--- a/src/session/frame_stats.c
++++ b/src/session/frame_stats.c
+@@ -190,11 +190,6 @@
+         agg->lastFrameTimestamp = slot->events[EV_COMPLETE];
+     }
+ 
+-    /* Network duration (stat 6): event 12 → 13. */
+-    if (has_event(slot, EV_FRAME_SEND) && has_event(slot, EV_FRAME_RECV)) {
+-        accum_add(accum, 6,
+-                  ticks_to_ms(slot->events[EV_FRAME_SEND], slot->events[EV_FRAME_RECV]));
+-    }
+     /* Decode duration (stat 7): event 14 → 15. */
+     if (has_event(slot, EV_DECODE_BEGIN) && has_event(slot, EV_DECODE_END)) {
+         accum_add(accum, 7,
+@@ -211,10 +206,35 @@
+                   ticks_to_ms(slot->events[EV_FRAME_RECV], slot->events[EV_COMPLETE]));
+     }
+ 
+-    /* Stats 0 (FPS), 11/12/13 (input latency variants), 14 (ping), 15/16/17
+-     * (bitrates), 18 (loss) require either an FPS sampler, the input-mark
+-     * pipeline, or network-stats hooks that ihslib does not yet own. They are
+-     * left out of this MVP; when those signals land they can fold in here. */
++    /* Stats 0 (FPS) and 11/12/13 (input latency variants) require an FPS
++     * sampler or the input-mark pipeline, left out of this MVP. 14 to 18 come
++     * from IHS_FrameStatsAddNetworkSample. Network duration (stat 6) is left
++     * out: events 12 and 13 come from the host's and the client's clocks. */
++}
++
++void IHS_FrameStatsAddNetworkSample(IHS_FrameStatsAggregator *agg, uint64_t nowMs, uint32_t roundTrip,
++                                    uint32_t bytes, uint32_t packets, uint32_t packetsLost) {
++    IHS_MutexLock(agg->lock);
++    if (agg->lastNetworkSampleMs != 0 && nowMs > agg->lastNetworkSampleMs) {
++        IHS_FrameStatsAccumulator *accum = &agg->accumulator;
++        double kbps = (double) (bytes - agg->lastBytes) * 8.0 / (double) (nowMs - agg->lastNetworkSampleMs);
++        accum_add(accum, k_EFrameStatServerBitrateKbitPerSec, kbps);
++        accum_add(accum, k_EFrameStatClientBitrateKbitPerSec, kbps);
++        accum_add(accum, k_EFrameStatLinkBandwidthKbitPerSec, kbps);
++        uint32_t received = packets - agg->lastPackets;
++        uint32_t lost = packetsLost > agg->lastPacketsLost ? packetsLost - agg->lastPacketsLost : 0;
++        if (received + lost > 0) {
++            accum_add(accum, k_EFrameStatPacketLossPercentage, 100.0 * lost / (received + lost));
++        }
++        if (roundTrip != 0) {
++            accum_add(accum, k_EFrameStatPingTimeMS, roundTrip * 1000.0 / 65536.0);
++        }
++    }
++    agg->lastBytes = bytes;
++    agg->lastNetworkSampleMs = nowMs;
++    agg->lastPackets = packets;
++    agg->lastPacketsLost = packetsLost;
++    IHS_MutexUnlock(agg->lock);
+ }
+ 
+ size_t IHS_FrameStatsAggregatorDrain(IHS_FrameStatsAggregator *agg, uint16_t *outLatestFrameId) {
+--- a/src/session/channels/ch_data.c
++++ b/src/session/channels/ch_data.c
+@@ -83,6 +83,9 @@
+ void IHS_SessionChannelDataReceived(IHS_SessionChannel *channel, IHS_SessionPacket *packet) {
+     IHS_SessionChannelData *dataCh = (IHS_SessionChannelData *) channel;
+     assert(dataCh->window != NULL);
++    if (channel->type == IHS_SessionChannelTypeDataVideo) {
++        IHS_SessionCounterAdd(channel->session->counters.videoBytes, (uint32_t) packet->body.size);
++    }
+     IHS_SessionPacket assembled;
+     bool fromFec = packet->header.type == IHS_SessionPacketTypeUnreliableFEC;
+     if (fromFec) {
+--- a/src/session/channels/video/ch_data_video.c
++++ b/src/session/channels/video/ch_data_video.c
+@@ -281,6 +281,9 @@
+ 
+     if (AssembleFrame(channel)) {
+         IHS_StreamVideoSubmitResult result = SubmitFrame(channel, &videoCh->frame.buffer, videoCh->frame.flags);
++        IHS_SessionReportVideoFrameComplete(channel->session, header->id,
++                                            result == IHS_StreamVideoSubmitOK ? IHS_VideoFrameResultDisplayed
++                                                                              : IHS_VideoFrameResultDroppedDecodeCorrupt);
+         IHS_BufferClear(&videoCh->frame.buffer, false);
+         videoCh->frame.flags = 0;
+         videoCh->states.frameFinished = false;
+@@ -476,15 +479,18 @@
+     /* Drain the per-frame stats aggregator into the accumulator and ship one
+      * CFrameStatsListMsg over the stats channel. Matches Steam's
+      * CStreamClient::SendFrameEvents (0x001fb4f0) — 1 Hz, video only, packet
+-     * suppressed when nothing was folded. */
++     * suppressed when there is nothing to send. */
+     if (session->frameStats == NULL) {
+         return 1000;
+     }
+     uint16_t latest = 0;
+-    size_t folded = IHS_FrameStatsAggregatorDrain(session->frameStats, &latest);
+-    if (folded == 0) {
+-        return 1000;
+-    }
++    IHS_FrameStatsAggregatorDrain(session->frameStats, &latest);
++    IHS_FrameStatsAddNetworkSample(session->frameStats, now, IHS_SessionCounterGet(session->counters.roundTrip),
++                                   IHS_SessionCounterGet(session->counters.videoBytes),
++                                   IHS_SessionCounterGet(session->counters.videoPackets) +
++                                   IHS_SessionCounterGet(session->counters.fecShards),
++                                   IHS_SessionCounterGet(session->counters.videoPacketsLost) +
++                                   IHS_SessionCounterGet(session->counters.fecShardsLost));
+     IHS_SessionChannel *stats = IHS_SessionChannelFor(session, IHS_SessionChannelIdStats);
+     if (stats == NULL) {
+         return 1000;
+@@ -524,6 +530,9 @@
+         accumPtrs[rowCount] = row;
+         rowCount++;
+     }
++    if (rowCount == 0) {
++        return 1000;
++    }
+     message.n_accumulated_stats = rowCount;
+     message.accumulated_stats = accumPtrs;
+ 

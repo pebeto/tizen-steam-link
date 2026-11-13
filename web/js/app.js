@@ -28,7 +28,7 @@
     }
 
     function bandwidthText(kbps) {
-        return kbps < 0 ? 'Automatic' : kbps / 1000 + ' Mbit/s';
+        return kbps === -2 ? 'Adaptive' : kbps < 0 ? 'Automatic' : kbps / 1000 + ' Mbit/s';
     }
 
     var SETTINGS = [
@@ -42,7 +42,7 @@
             text: function (v) { return LATENCIES[v]; }},
         {key: 'quality', label: 'Quality', values: [-1, 1, 2, 3],
             text: function (v) { return QUALITIES[v]; }},
-        {key: 'bandwidth', label: 'Bandwidth limit', values: [-1, 5000, 10000, 15000, 20000, 30000, 50000, 75000, 100000],
+        {key: 'bandwidth', label: 'Bandwidth limit', values: [-2, -1, 5000, 10000, 15000, 20000, 30000, 50000, 75000, 100000],
             text: bandwidthText},
         {key: 'audio', label: 'Audio', values: [true, false], kind: 'switch',
             text: function (v) { return v ? 'On' : 'Off'; }},

@@ -1,0 +1,57 @@
+Let the app ask for an adaptive bitrate.
+
+desired_bitrate_kbps (field 6) set to -1 doesn't make Steam adapt: in a Steam Deck's
+streaming_log.txt the host then logs "Setting target bitrate to 15000" and keeps it. Steam's
+own Steam Link app sends 0. The host then logs "Setting maximum bitrate to N", N being the
+client's maximum_decode_bitrate_kbps, and its dynamicbitrate control runs: it drops the target
+when the client reports lost data and raises it again while the stream keeps up.
+
+bitrateKbps = IHS_SESSION_BITRATE_ADAPTIVE (-2) now sends 0. The client caps stay at 30000, so
+that is the ceiling. Steam's control drops to its minimum (about 2.5 Mbit/s) on each loss, so
+this is a choice for the app to offer, not a new default.
+
+diff --git a/include/ihslib/session.h b/include/ihslib/session.h
+index 4dd108a..ced39ce 100644
+--- a/include/ihslib/session.h
++++ b/include/ihslib/session.h
+@@ -40,6 +40,12 @@ typedef struct IHS_SessionInfo {
+     uint64_t steamId;
+ } IHS_SessionInfo;
+ 
++/**
++ * bitrateKbps for an adaptive bitrate. Steam then lowers the bitrate when the client reports lost
++ * data and raises it again while the stream keeps up, up to maximum_decode_bitrate_kbps (30000).
++ */
++#define IHS_SESSION_BITRATE_ADAPTIVE (-2)
++
+ typedef struct IHS_SessionConfig {
+     bool enableAudio;
+     bool enableHevc;
+@@ -50,7 +56,10 @@ typedef struct IHS_SessionConfig {
+      * 3 beautiful. 0 keeps balanced.
+      */
+     int quality;
+-    /** Bitrate to ask for in kbit/s. 0 keeps 30000; -1 lets Steam decide. */
++    /**
++     * Bitrate to ask for in kbit/s. 0 keeps 30000; -1 lets Steam decide; IHS_SESSION_BITRATE_ADAPTIVE
++     * asks for no fixed bitrate, which turns on Steam's own bitrate control.
++     */
+     int bitrateKbps;
+     /**
+      * Largest picture the client wants. 0 leaves it to Steam, which then stays at the 1920x1080
+diff --git a/src/session/channels/ch_control_negotiation.c b/src/session/channels/ch_control_negotiation.c
+index 5fbca86..16720e6 100644
+--- a/src/session/channels/ch_control_negotiation.c
++++ b/src/session/channels/ch_control_negotiation.c
+@@ -163,7 +163,10 @@ static void OnNegotiationInit(IHS_SessionChannel *channel, const CNegotiationIni
+     int bitrateKbps = ihsConf.bitrateKbps != 0 ? ihsConf.bitrateKbps : 30000;
+     PROTOBUF_C_SET_VALUE(clientConfig, quality,
+                          ihsConf.quality != 0 ? (EStreamQualityPreference) ihsConf.quality : k_EStreamQualityBalanced);
+-    PROTOBUF_C_SET_VALUE(clientConfig, maximum_bitrate_kbps, bitrateKbps);
++    // 0 is what Steam's own Steam Link app sends: no fixed bitrate, so the host's dynamic bitrate
++    // control runs. -1 has the host pick a fixed bitrate instead.
++    PROTOBUF_C_SET_VALUE(clientConfig, maximum_bitrate_kbps,
++                         ihsConf.bitrateKbps == IHS_SESSION_BITRATE_ADAPTIVE ? 0 : bitrateKbps);
+     if (ihsConf.enableHevc) {
+         PROTOBUF_C_SET_VALUE(clientConfig, enable_video_hevc, true);
+     }
