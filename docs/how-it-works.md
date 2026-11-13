@@ -22,7 +22,9 @@ feeds the picture and sound to the TV's hardware decoder. The TV side follows th
    Sound comes as Opus, which the module decodes to PCM.
 5. The module hands video and sound to the TV's player, Samsung's
    ElementaryMediaStreamSource, on a `<video>` element.
-6. Controllers are read from the browser's Gamepad API 250 times a second and reach Steam with
+6. Once a second the app tells Steam which frames the TV's player took, and the ping, bitrate
+   and packet loss it sees. Steam's adaptive bitrate runs on these.
+7. Controllers are read from the browser's Gamepad API 250 times a second and reach Steam with
    the same 48-byte report as ihslib's SDL backend. The app also tells Steam each controller's
    type (DualSense, DualShock 4, Xbox 360, Xbox One and Series, Switch Pro, or generic for the
    rest), so Big Picture shows the right button prompts. The type follows the vendor and product
@@ -48,8 +50,10 @@ with each kind of loss like this:
 
 A lower bandwidth limit helps on a busy network: Steam then makes smaller keyframes, which
 means fewer packets to lose. With Adaptive, Steam sets the bitrate itself: it lowers it when
-data gets lost and raises it again, up to 30 Mbit/s. In a Steam Deck's log the target fell to
-about 2.5 Mbit/s at each loss, so a fixed 20 Mbit/s stays the default.
+data gets lost and raises it again, up to 30 Mbit/s. From a Steam Deck with 5% loss for 20
+seconds, the target fell to about 2.5 Mbit/s and came back to about 12 Mbit/s 7 to 10 seconds
+after the loss stopped. From a Windows PC, over 9 minutes of play, it averaged about 12 Mbit/s.
+That is below a fixed 20 Mbit/s, which stays the default.
 
 If the WebAssembly module crashes during a stream, the app stops calling into it, since the
 crashed thread may still hold one of its locks and the next call would hang the page. It
@@ -115,6 +119,8 @@ stream a fresh player.
 - The sound may run further ahead of the clock: above 80 ms one sound frame in eight is dropped
   to work the backlog off, and only above 200 ms every one. With the 40 ms the other TVs allow,
   the Q74T dropped about 1.6 s of sound a minute, in 18 gaps.
+- HEVC HDR showed no picture on the Q74T, streaming from a Steam Deck: the player opened its
+  10-bit track, but no keyframe ever arrived. H.264 and HEVC without HDR played.
 
 When the TV refuses the video track the app asks for, the app tries lower levels and then 60
 fps: the Q74T refuses the H.264 level 5.2 track the app asks for at 1080p and 120 fps. If the TV

@@ -88,7 +88,7 @@ typed it there. Steam's own on-screen keyboard in Big Picture works too.
 | Video codec | H.264, HEVC, HEVC HDR | H.264 | Steam sends HEVC only when the computer can encode it in hardware. HEVC HDR also offers HDR10, which Steam sends when the computer's display is in HDR mode. |
 | Player latency | Automatic, Low, Ultra low | Automatic | The TV player's latency mode, see [docs/how-it-works.md](docs/how-it-works.md#the-tvs-player). HEVC always uses Low. Changing it reloads the app if that changes the latency mode. |
 | Quality | Automatic, Fast, Balanced, Beautiful | Balanced | Steam's own quality preference. |
-| Bandwidth limit | Adaptive, Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. Adaptive has Steam lower the bitrate when packets get lost and raise it again, up to 30 Mbit/s, as Steam's own Steam Link app does. Automatic has Steam pick a fixed bitrate. |
+| Bandwidth limit | Adaptive, Automatic, 5 to 100 Mbit/s | 20 Mbit/s | A lower limit means fewer packets to lose on Wi-Fi. Adaptive has Steam lower the bitrate when packets get lost and raise it again, up to 30 Mbit/s, as Steam's own Steam Link app does. In tests it came back to about 12 Mbit/s within 10 seconds of the loss stopping. Automatic has Steam pick a fixed bitrate. |
 | Audio | On, off | On | |
 | Start in | Big Picture, Desktop | Big Picture | |
 | After lost video packets | Automatic, Keep playing, Wait for a clean picture | Automatic | Automatic keeps playing on 2020 TVs (Tizen 5.5) and waits on the others. Keep playing may smear the picture for a moment after a lost packet. Waiting froze it for 10 to 50 s at a time on a Q74T streaming from a Steam Deck on Wi-Fi, when the keyframe lost a packet too. |
@@ -130,6 +130,7 @@ safer choice on Wi-Fi.
 | "The streaming part of the app hasn't started" | Restart the TV fully by holding the power button, then open the app again. |
 | "This TV could not play the stream at these settings" | The TV refused the video. Try 60 fps or a lower resolution. On a 2020 TV (Tizen 5.5), also close the app and open it again. |
 | "This TV can only change the video format when the app starts" | 2020 TVs (Tizen 5.5) keep the video codec and audio of the first stream. Close the app and open it again. |
+| The bottom of the picture is shifted sideways, from a Linux computer with an AMD graphics card | Turn off "Enable hardware encoding" in Steam's Remote Play settings on the computer. Steam then encodes on the processor. |
 | Anything else | Press the blue key to see the app's log. |
 
 ## More

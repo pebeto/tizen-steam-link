@@ -56,7 +56,8 @@ ninja -C build/asan && build/asan/tests/test-core
 ```
 
 ThreadSanitizer works the same way with `-fsanitize=thread` in `build/tsan`. It reports races
-on the interrupt flags in ihslib's `base.c` and `ch_data.c`, which come from upstream.
+on the interrupt flags in ihslib's `base.c` and `ch_data.c`, and on the discovery callbacks in
+`discovery.c` during the probe test, all from upstream code.
 
 ## CI and releases
 
