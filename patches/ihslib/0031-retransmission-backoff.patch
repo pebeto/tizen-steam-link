@@ -1,0 +1,53 @@
+Keep resending a reliable packet until it is acknowledged, with backoff.
+
+A pending packet gave up after 20 sends 10 ms apart (200 ms). Debug logs on a Samsung QN85A
+on wired Ethernet showed network drops of about 4 seconds in both directions; the TV gave up
+on hundreds of control packets during one. Afterwards Steam acknowledged packet 19271 206
+times in a row and never got 19272: it delivers control messages in order, so every later
+message, controller input included, waited behind the hole and the controls stayed dead
+until the next stream.
+
+Now a packet is sent 5 times 10 ms apart, then 20, 40 and 80 ms apart, then every 100 ms,
+up to 105 sends (about 10 s, the time after which a silent host ends the session). ACKs are
+still matched to the exact packet: treating them as cumulative cancelled packets Steam was
+still missing.
+
+--- a/src/session/retransmission.c	2026-11-23 09:06:08.362100251 +0100
++++ b/src/session/retransmission.c	2026-11-23 09:06:18.953355682 +0100
+@@ -27,7 +27,26 @@
+ #include "session_pri.h"
+ 
+ #define RETRANSMISSION_INTERVAL 10
+-#define RETRANSMISSION_ATTEMPTS 20
++/* A reliable packet goes on being sent until its ACK comes, about 10 s at most (5 sends 10 ms
++ * apart, then 20, 40 and 80 ms, then every 100 ms). It used to give up after 20 sends 10 ms
++ * apart, 200 ms in all. A network drop longer than that, which happens on Ethernet too, lost
++ * the packet for good: Steam delivers control messages in order and held every later one,
++ * controller input included, behind the hole, so the controls stayed dead until the next stream. */
++#define RETRANSMISSION_ATTEMPTS 105
++#define RETRANSMISSION_FAST_SENDS 5
++#define RETRANSMISSION_MAX_INTERVAL 100
++
++static uint64_t RetransmissionInterval(uint8_t sends) {
++    if (sends <= RETRANSMISSION_FAST_SENDS) {
++        return RETRANSMISSION_INTERVAL;
++    }
++    unsigned shift = sends - RETRANSMISSION_FAST_SENDS;
++    if (shift >= 4) {
++        return RETRANSMISSION_MAX_INTERVAL;
++    }
++    uint64_t interval = (uint64_t) RETRANSMISSION_INTERVAL << shift;
++    return interval < RETRANSMISSION_MAX_INTERVAL ? interval : RETRANSMISSION_MAX_INTERVAL;
++}
+ 
+ /*
+  * A pending packet belongs to its timer task: the task's end callback takes it out of the queue
+@@ -92,7 +111,7 @@
+     IHS_QueueAppend(retransmission->queue, pending);
+     IHS_MutexUnlock(retransmission->lock);
+     IHS_TimerTaskStart(retransmission->session->timers, RetransmissionTimerRun, RetransmissionTimerEnd,
+-                       RETRANSMISSION_INTERVAL, pending);
++                       RetransmissionInterval(pending->packet.header.retransmitCount), pending);
+     return true;
+ }
+ 
