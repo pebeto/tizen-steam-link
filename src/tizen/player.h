@@ -126,6 +126,7 @@ private:
     class SourceListener : public samsung::wasm::ElementaryMediaStreamSourceListener {
     public:
         explicit SourceListener(Player *player) : player_(player) {}
+        void OnSourceDetached() override;
         void OnSourceClosed() override;
         void OnSourceOpenPending() override;
         void OnSourceOpen() override;
@@ -149,6 +150,9 @@ private:
     };
 
     bool OpenSource(const IHS_StreamVideoConfig &config);
+    // Sets the player up again for another codec, within the page: Steam switched codecs
+    // mid-session. false: a step failed, and the session has to start over (formatChanged()).
+    bool SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10);
     bool WaitFor(std::chrono::milliseconds timeout, const std::function<bool()> &condition);
     Seconds Now() const;
     void AppendPcm(const int16_t *pcm, int samplesPerChannel);
