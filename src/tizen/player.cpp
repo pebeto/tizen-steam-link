@@ -253,7 +253,7 @@ bool Player::SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10) 
 
     // Take everything down: close the source, drop both tracks (releasing the decoders), detach
     // the source from the element, then set it up as OpenSource does. On a QN85A (Tizen 6) this
-    // takes about 90 ms. Swapping just the video track there left a source that never opened
+    // took 0.25 to 0.9 s, most of it detaching and attaching. Swapping just the video track there left a source that never opened
     // again, presumably because the old decoder was still held. The legacy player never gets
     // here: removing and adding tracks crashed the browser on a Q74T (see VideoStart).
     element_.Pause();
