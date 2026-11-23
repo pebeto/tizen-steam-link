@@ -246,6 +246,16 @@ int Player::VideoStart(const IHS_StreamVideoConfig &config) {
     lastFrame_ = {};
     bool audio = audioEnabled_;
     bool main10 = hdr_ || config.colorspace == IHS_StreamVideoColorspaceHDR10;
+    if (sourceOpened_ && !keepTracks_ && (openCodec_ != config.codec || openMain10_ != main10)) {
+        // The open tracks can't decode the new video. Fed to them anyway, an HEVC track took
+        // H.264 frames without showing any, and after about 40 s the TV closed the source: the
+        // picture stayed frozen, then black, with sound and controls going on. Drop the frames
+        // until the app has started the session over (a new page sets up new tracks).
+        Log(IHS_LogLevelWarn, "Player", "Steam switched the video from codec %d%s to codec %d%s; starting over",
+            openCodec_, openMain10_ ? " (10-bit)" : "", config.codec, main10 ? " (10-bit)" : "");
+        formatChanged_ = true;
+        return -1;
+    }
     if (sourceOpened_ &&
         (!keepTracks_ || (openCodec_ == config.codec && openMain10_ == main10 && openAudio_ == audio))) {
         // Same source, same tracks; the frames carry the new size in their SPS, and the track's
@@ -281,7 +291,7 @@ int Player::VideoStart(const IHS_StreamVideoConfig &config) {
 }
 
 IHS_StreamVideoSubmitResult Player::VideoFrame(const uint8_t *data, size_t len, bool keyframe) {
-    if (!videoOpen_) {
+    if (!videoOpen_ || formatChanged_) {
         return IHS_StreamVideoSubmitOK;
     }
     uint32_t width, height;

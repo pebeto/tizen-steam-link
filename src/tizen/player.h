@@ -83,6 +83,10 @@ public:
     // With kept tracks, a stream needed other tracks than the ones the page set up: only a new
     // page (app start) can play it.
     bool restartNeeded() const { return restartNeeded_; }
+    // Steam switched the video to another codec or HEVC profile mid-session (it drops HEVC when
+    // its hardware encoder falls behind, and may go back to it later), which the open tracks
+    // can't play: the session has to start over with a new page.
+    bool formatChanged() const { return formatChanged_; }
     // VideoStart has set the tracks up for this page.
     bool setUp() const { return sourceUsed_; }
 
@@ -166,6 +170,7 @@ private:
     bool openAudio_ = false;
     bool openMain10_ = false;
     std::atomic<bool> restartNeeded_{false};
+    std::atomic<bool> formatChanged_{false};
     std::atomic<bool> videoOpen_{false};
     std::atomic<bool> audioOpen_{false};
     std::atomic<samsung::wasm::SessionId> videoSession_{0};

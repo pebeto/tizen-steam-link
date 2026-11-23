@@ -439,7 +439,8 @@ public:
     }
 
     void OnVideoFailed() override {
-        PostEvent("videoFailed", std::string("{\"restartNeeded\":") + (player_.restartNeeded() ? "true" : "false") + "}");
+        PostEvent("videoFailed", std::string("{\"restartNeeded\":") + (player_.restartNeeded() ? "true" : "false") +
+                                     ",\"formatChanged\":" + (player_.formatChanged() ? "true" : "false") + "}");
         worker_.Post([this] {
             if (auto session = CurrentSession()) session->Disconnect();
         });

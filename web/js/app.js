@@ -767,7 +767,9 @@
     // legacy player, once it has set up its tracks, the ones it set them up with.
     function playerTracks() {
         if (state.legacyPlayer && state.tracks && mod && mod.playerSetUp()) return state.tracks;
-        state.tracks = {hevc: state.settings.hevc, audio: state.settings.audio};
+        // After Steam switched codecs mid-session, H.264 until the app starts again: it only
+        // leaves HEVC when its encoder can't keep up, and would switch back and forth otherwise.
+        state.tracks = {hevc: state.h264Only ? false : state.settings.hevc, audio: state.settings.audio};
         return state.tracks;
     }
 
@@ -921,17 +923,19 @@
     }
 
     // A frozen stream reconnects instead of staying frozen. Only once audio has arrived: with audio
-    // off, a still picture can mean no new frames for a while.
+    // off, a still picture can mean no new frames for a while. Counts what reaches the TV's
+    // player, not what arrives: when the player closed its tracks, frames kept arriving and went
+    // nowhere, and the picture stayed black with sound and controls still going.
     function checkStalled(s, st, now) {
         if (s.ending) return;
-        var count = st ? st.videoFrames + st.audioPackets : -1;
+        var count = st ? st.videoAppended + st.audioAppended : -1;
         var armed = (s.media && s.media.armed) || !!(st && st.audioPackets > 0);
         if (!s.media || count !== s.media.count) {
             s.media = {count: count, time: now, armed: armed};
             return;
         }
         if (!armed || now - s.media.time < STALL_MS) return;
-        var stalled = 'No video or audio for ' + Math.round((now - s.media.time) / 1000) + ' s, reconnecting';
+        var stalled = 'No video or audio played for ' + Math.round((now - s.media.time) / 1000) + ' s, reconnecting';
         note('WARN [Stream] ' + stalled);
         console.warn('[Stream] ' + stalled);
         try {
@@ -1320,6 +1324,15 @@
         tsl.on('videoFailed', function (d) {
             var s = state.stream;
             if (!s || s.ending) return;
+            if (d && d.formatChanged) {
+                note('WARN [Stream] Steam changed the video codec, reconnecting with H.264');
+                state.h264Only = true;
+                try {
+                    sessionStorage.setItem('tsl.h264Only', '1');
+                } catch (e) { /* this page then just keeps it */ }
+                connectionLost(s, true, 'Steam changed the video format, reconnecting…');
+                return;
+            }
             s.ending = true;
             clearTimeout(s.timeout);
             // The legacy player keeps the tracks it tried for the page, so a new try needs an app start.
@@ -1496,6 +1509,9 @@
         } catch (e) { /* not important */ }
         if (message) toast(message);
         state.reconnects = reconnect ? reconnect.count : 0;
+        try {
+            state.h264Only = sessionStorage.getItem('tsl.h264Only') === '1';
+        } catch (e) { /* not important */ }
 
         // Without WebAssembly (TVs older than Tizen 5.5) the module can't load at all, and a module
         // that never finishes starting leaves a page that looks fine but can't do anything. Say so.
