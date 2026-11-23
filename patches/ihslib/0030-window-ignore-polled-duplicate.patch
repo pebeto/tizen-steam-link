@@ -1,0 +1,30 @@
+Ignore a resent copy of a packet that was already polled.
+
+IHS_SessionPacketsWindowAdd ignored packets more than Size ids behind the tail, but not one
+exactly Size behind: in an empty window, a copy of the newest polled packet (offset 0). Steam
+resends a reliable packet whenever our ACK for it is lost, so this happens often. The copy was
+stored in the slot just freed, outside the window. When the window came round to that slot
+again (128 packets later on the control channel) it read as taken, and the new packet there
+was dropped, and every retransmission of it too, while the ACK stayed at the id before it.
+
+A debug log on a Samsung QN85A showed Steam sending control packet 10311, its once-a-minute
+HID GetFeatureReport, about 470 times a second for 18 s, all refused, with controller input
+held the whole time. This was the periodic controller freeze (issue #3).
+
+--- a/src/session/window.c	2026-11-23 08:23:51.469446309 +0100
++++ b/src/session/window.c	2026-11-23 08:23:51.475421722 +0100
+@@ -79,8 +79,12 @@
+ bool IHS_SessionPacketsWindowAdd(IHS_SessionPacketsWindow *window, IHS_SessionPacket *packet) {
+     /* Calculate distance of 2 items */
+     int tailOffset = window->tail.pos < 0 ? 1 : (int16_t) (packet->header.packetId - window->tail.id);
+-    /* We already processed this packet, so ignore it */
+-    if (tailOffset < 0 && -tailOffset > IHS_SessionPacketsWindowSize(window)) {
++    /* We already processed this packet, so ignore it. The window holds the last Size ids up to
++     * and including the tail; anything at or before tail - Size was polled. A copy of the newest
++     * polled packet (tailOffset 0 in an empty window: Steam resends it when our ACK is lost) used
++     * to pass here and land in the slot just freed, outside the window. A lap later that slot
++     * read as taken, and every copy of the packet due there was dropped. */
++    if (tailOffset <= 0 && -tailOffset >= IHS_SessionPacketsWindowSize(window)) {
+         return true;
+     }
+     /* Further ahead than the window holds: the stream went on without us (on Wi-Fi, a gap of a few

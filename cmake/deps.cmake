@@ -23,7 +23,8 @@ endif ()
 # gap longer than their window, HDR, a race in the silence check, size checks for unconnected
 # packets that hold on 32 bits, FEC allocation failures, empty audio codec data, an adaptive
 # bitrate, video that can go on after a lost frame, a round trip that skips negative samples,
-# and the frame stats Steam's bitrate control needs; each patch starts with a description.
+# the frame stats Steam's bitrate control needs, and a packet window that ignores resent copies
+# of packets it already delivered; each patch starts with a description.
 # (0003, logging for the pairing request, was dropped once pairing worked on the TV.)
 set(TSL_IHSLIB_PATCHES ${CMAKE_CURRENT_LIST_DIR}/../patches/ihslib)
 FetchContent_Declare(ihslib
@@ -57,6 +58,7 @@ FetchContent_Declare(ihslib
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0027-keep-playing-after-loss.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0028-round-trip-negative-sample.patch
               COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0029-frame-stats-for-bitrate-control.patch
+              COMMAND patch -p1 --forward -i ${TSL_IHSLIB_PATCHES}/0030-window-ignore-polled-duplicate.patch
         SOURCE_SUBDIR no-cmake)
 
 # protobuf-c runtime only; the generated .pb-c.c files ship with ihslib.
