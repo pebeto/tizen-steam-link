@@ -185,3 +185,5 @@ Each patch starts with a description of what it does and why.
 | 0027 | Lets the video go on after a lost frame, reporting the loss, instead of freezing until a keyframe arrives (the "After lost video packets" setting). |
 | 0028 | Skips a round trip sample that comes out negative, which showed as 65535996 ms. |
 | 0029 | Sends the frame and network stats Steam's bitrate control needs to raise the bitrate again after a loss. |
+| 0030 | Ignores a resent copy of a packet already delivered, which used to block the packet due in its slot 128 packets later and froze controller input about once a minute. |
+| 0031 | Resends a control message until Steam confirms it, for up to about 10 seconds, instead of giving up after 200 ms and leaving controller input dead after a network drop. |
