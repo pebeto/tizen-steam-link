@@ -40,10 +40,10 @@ rm -rf build/{desktop,tizen}/_deps/ihslib-{src,build,subbuild}
 
 `tests/test_core.cpp` covers the shared code and the patched parts of ihslib: the device
 identity and PIN, keyboard and gamepad mapping, controller types from IDs and from names, a
-probe against a fake host, the packet window, error correction (against an independent
-encoder), lost audio frames, the retransmission race, round trip samples, the silence check,
-size checks on Steam's MTU pings, empty audio codec data, Wake-on-LAN packets, and
-`Counter64` with several threads writing at once.
+probe against a fake host, the packet window (resent copies of delivered packets included),
+error correction (against an independent encoder), lost audio frames, the retransmission race,
+round trip samples, the silence check, size checks on Steam's MTU pings, empty audio codec
+data, Wake-on-LAN packets, and `Counter64` with several threads writing at once.
 
 To run them under AddressSanitizer and UndefinedBehaviorSanitizer:
 

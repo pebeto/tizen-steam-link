@@ -566,6 +566,26 @@ void TestPacketWindowContiguousId() {
     IHS_SessionPacketsWindowDestroy(window);
 }
 
+void TestPacketWindowDuplicateOfPolled() {
+    // Steam resends a packet when our ACK is lost, often the newest one, after it was polled.
+    // The window used to store that copy in the slot it had just freed, outside the window, and
+    // a lap later took the slot as taken and dropped the new packet there, every copy of it:
+    // the control channel waited for it until Steam gave up on it (18 s on a QN85A).
+    IHS_SessionPacketsWindow *window = IHS_SessionPacketsWindowCreate(8);
+    uint16_t id = 0;
+    for (uint16_t i = 0; i < 24; i++) {
+        CHECK(AddPacket(window, i, 0));
+        CHECK_EQ(PollFrame(window), i);
+        CHECK(AddPacket(window, i, 0));      // the duplicate of the packet just polled
+        CHECK_EQ(PollFrame(window), -1);     // not delivered twice
+        if (i > 0) CHECK(AddPacket(window, (uint16_t) (i - 1), 0));
+        CHECK_EQ(PollFrame(window), -1);
+        CHECK(IHS_SessionPacketsWindowContiguousId(window, &id));
+        CHECK_EQ(id, i);
+    }
+    IHS_SessionPacketsWindowDestroy(window);
+}
+
 void TestPacketWindowFullIsNotEmpty() {
     // Head away from slot 0, then fill: the window used to take the last slot and then read
     // as empty, so nothing could be polled or discarded again.
@@ -1123,6 +1143,7 @@ int main() {
     TestSessionLifecycleWithoutConnect();
     TestProbeAgainstFakeHost();
     TestPacketWindowContiguousId();
+    TestPacketWindowDuplicateOfPolled();
     TestPacketWindowFullIsNotEmpty();
     TestPacketWindowDiscardAndReset();
     TestPacketWindowSkipLost();
