@@ -111,6 +111,9 @@
         setPadInput: function () {
             record('setPadInput', arguments);
         },
+        pressGuide: function () {
+            record('pressGuide', arguments);
+        },
         wake: function () {
             record('wake', arguments);
             return true;

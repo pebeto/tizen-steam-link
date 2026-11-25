@@ -57,6 +57,7 @@ which is made for a controller and a TV.
 | Forget the selected computer | Red (A) | X |
 | Open the stream menu | Hold Back | LB + RB + View + Menu |
 | Show or hide the stream statistics | Red (A), during a stream | From the stream menu |
+| Press the Steam (guide) button | From the stream menu | Guide button, or from the stream menu |
 | Send Escape to the computer | Press Back briefly | |
 | Show the app's log | Blue (D) | |
 
@@ -73,6 +74,10 @@ Hold Back during a stream to bring up the menu. While it is open, the remote and
 controllers drive the menu instead of the game.
 
 ![The stream menu](docs/images/stream-menu.png)
+
+Press the Steam button presses the guide button on the first controller, which opens Steam's
+menu or overlay. On some TVs the controller's own guide button also opens Samsung's bar over
+the stream, and the bar then takes the D-pad.
 
 Type text opens the TV's keyboard and sends what you type to the computer, as if you had
 typed it there. Steam's own on-screen keyboard in Big Picture works too.

@@ -259,6 +259,10 @@ public:
     // released.
     void SetPadInput(bool enabled) { padInput_ = enabled; }
 
+    // The Steam (guide) button, from the stream menu: on some TVs the pad's own guide button also
+    // opens Samsung's bar over the stream. Held for 40 polls, about 200 ms.
+    void PressGuide() { guidePolls_ = 40; }
+
     void MouseButton(int domButton, bool down) {
         IHS_StreamInputMouseButton button;
         switch (domButton) {
@@ -518,6 +522,16 @@ private:
                 continue;
             }
             int count = emscripten_get_num_gamepads();
+            // The Steam button from the stream menu, held on the first connected pad.
+            bool guide = guidePolls_ > 0;
+            if (guide) guidePolls_--;
+            auto send = [&](int slot, TSL_GamepadState state) {
+                if (guide) {
+                    state.buttons |= 1u << TSL_PAD_GUIDE;
+                    guide = false;
+                }
+                session->UpdateGamepad(slot, state);
+            };
             for (int i = 0; i < TSL_GAMEPAD_SLOTS; i++) {
                 EmscriptenGamepadEvent pad;
                 bool connected = i < count && emscripten_get_gamepad_status(i, &pad) == EMSCRIPTEN_RESULT_SUCCESS &&
@@ -551,13 +565,13 @@ private:
                     const int16_t triggerUp = 4096;
                     if (state.buttons != 0 || state.axes[TSL_PAD_AXIS_TRIGGER_LEFT] > triggerUp ||
                         state.axes[TSL_PAD_AXIS_TRIGGER_RIGHT] > triggerUp) {
-                        session->UpdateGamepad(i, TSL_GamepadState{});
+                        send(i, TSL_GamepadState{});
                         continue;
                     }
                     padHeld[i] = false;
                     exitSent = false;
                 }
-                session->UpdateGamepad(i, state);
+                send(i, state);
                 if ((state.buttons & exitCombo) == exitCombo && !exitSent) {
                     exitSent = true;
                     PostEvent("exitCombo", "{}");
@@ -588,6 +602,7 @@ private:
     std::atomic<bool> polling_{false};
     std::atomic<bool> streaming_{false};
     std::atomic<bool> padInput_{true};
+    std::atomic<int> guidePolls_{0};
     std::thread gamepadThread_;
 };
 
@@ -675,6 +690,7 @@ bool PlayerSetUp() { return g_app->player().setUp(); }
 void Key(const std::string &code, bool down) { g_app->Key(code, down); }
 void SendText(const std::string &text) { g_app->SendText(text); }
 void SetPadInput(bool enabled) { g_app->SetPadInput(enabled); }
+void PressGuide() { g_app->PressGuide(); }
 void MouseMove(int dx, int dy) { g_app->MouseMove(dx, dy); }
 void MouseButton(int button, bool down) { g_app->MouseButton(button, down); }
 void MouseWheel(int deltaY) { g_app->MouseWheel(deltaY); }
@@ -753,6 +769,7 @@ EMSCRIPTEN_BINDINGS(tsl) {
     emscripten::function("key", &tsl::Key);
     emscripten::function("sendText", &tsl::SendText);
     emscripten::function("setPadInput", &tsl::SetPadInput);
+    emscripten::function("pressGuide", &tsl::PressGuide);
     emscripten::function("mouseMove", &tsl::MouseMove);
     emscripten::function("mouseButton", &tsl::MouseButton);
     emscripten::function("mouseWheel", &tsl::MouseWheel);

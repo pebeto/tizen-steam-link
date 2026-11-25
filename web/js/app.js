@@ -1034,6 +1034,9 @@
                 label();
             } else if (action === 'text') {
                 openTextDialog();
+            } else if (action === 'guide') {
+                closeStreamDialogs();
+                pressGuide();
             } else if (action === 'leave') {
                 closeStreamDialogs();
                 endStream();
@@ -1041,6 +1044,19 @@
                 closeStreamDialogs();
             }
         });
+    }
+
+    // On some TVs the pad's own guide button also opens Samsung's bar over the stream, so the menu
+    // presses it on the first pad instead. Steam only knows pads that are connected.
+    function pressGuide() {
+        var pads = navigator.getGamepads ? navigator.getGamepads() : [];
+        for (var i = 0; i < pads.length; i++) {
+            if (pads[i] && pads[i].connected) {
+                if (mod) mod.pressGuide();
+                return;
+            }
+        }
+        toast('Connect a controller first.', true);
     }
 
     function openTextDialog() {
