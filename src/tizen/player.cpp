@@ -253,9 +253,10 @@ bool Player::SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10) 
 
     // Take everything down: close the source, drop both tracks (releasing the decoders), detach
     // the source from the element, then set it up as OpenSource does. On a QN85A (Tizen 6) this
-    // took 0.25 to 0.9 s, most of it detaching and attaching. Swapping just the video track there left a source that never opened
-    // again, presumably because the old decoder was still held. The legacy player never gets
-    // here: removing and adding tracks crashed the browser on a Q74T (see VideoStart).
+    // took 0.25 to 0.9 s, most of it detaching and attaching. Swapping just the video track there
+    // left a source that never opened again, presumably because the old decoder was still held.
+    // The legacy player never gets here: removing and adding tracks crashed the browser on a Q74T
+    // (see VideoStart).
     element_.Pause();
     source_.Close([](OperationResult) {});
     if (!WaitFor(kOpenTimeout, [this] { return sourceState_ == ReadyState::kClosed; })) {
@@ -269,7 +270,8 @@ bool Player::SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10) 
     if (audioEnabled_) {
         std::lock_guard<std::mutex> lock(audioMutex_);
         auto removedAudio = source_.RemoveTrack(audioTrack_);
-        Log(IHS_LogLevelInfo, "Player", "Live switch: RemoveTrack(audio) %d", static_cast<int>(removedAudio.operation_result));
+        Log(IHS_LogLevelInfo, "Player", "Live switch: RemoveTrack(audio) %d",
+            static_cast<int>(removedAudio.operation_result));
         audioTrack_ = samsung::wasm::ElementaryMediaTrack();
     }
     element_.SetSrc(nullptr);
@@ -287,7 +289,8 @@ bool Player::SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10) 
                 samsung::wasm::ChannelLayout::kStereo, kSampleRate,
         });
         if (!audio) {
-            Log(IHS_LogLevelError, "Player", "Live switch: audio AddTrack failed: %d", static_cast<int>(audio.operation_result));
+            Log(IHS_LogLevelError, "Player", "Live switch: audio AddTrack failed: %d",
+                static_cast<int>(audio.operation_result));
             return false;
         }
         std::lock_guard<std::mutex> lock(audioMutex_);
