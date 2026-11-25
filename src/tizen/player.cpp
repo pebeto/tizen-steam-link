@@ -1,6 +1,7 @@
 #include "tizen/player.h"
 
 #include <cstring>
+#include <memory>
 
 #include "core/log.h"
 
@@ -77,6 +78,12 @@ Player::Player(const char *videoElementId, samsung::wasm::EmssLatencyMode latenc
 
 Player::~Player() {
     if (opus_ != nullptr) opus_decoder_destroy(opus_);
+}
+
+void Player::SourceListener::OnSourceDetached() {
+    std::lock_guard<std::mutex> lock(player_->mutex_);
+    player_->sourceState_ = ReadyState::kDetached;
+    player_->changed_.notify_all();
 }
 
 void Player::SourceListener::OnSourceClosed() {
@@ -234,6 +241,139 @@ bool Player::OpenSource(const IHS_StreamVideoConfig &config) {
     return true;
 }
 
+bool Player::SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10) {
+    using samsung::wasm::OperationResult;
+    auto began = std::chrono::steady_clock::now();
+    auto since = [&began] {
+        return static_cast<int>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - began).count());
+    };
+    std::vector<TrackChoice> choices = VideoTrackChoices(config, fps_, main10);
+    if (choices.empty()) return false;
+
+    // Take everything down: close the source, drop both tracks (releasing the decoders), detach
+    // the source from the element, then set it up as OpenSource does. On a QN85A (Tizen 6) this
+    // took 0.25 to 0.9 s, most of it detaching and attaching. Swapping just the video track there
+    // left a source that never opened again, presumably because the old decoder was still held.
+    // The legacy player never gets here: removing and adding tracks crashed the browser on a Q74T
+    // (see VideoStart).
+    element_.Pause();
+    source_.Close([](OperationResult) {});
+    if (!WaitFor(kOpenTimeout, [this] { return sourceState_ == ReadyState::kClosed; })) {
+        Log(IHS_LogLevelError, "Player", "Live switch: the source did not close");
+        return false;
+    }
+    auto removedVideo = source_.RemoveTrack(videoTrack_);
+    Log(IHS_LogLevelInfo, "Player", "Live switch: closed at %d ms, RemoveTrack(video) %d", since(),
+        static_cast<int>(removedVideo.operation_result));
+    videoTrack_ = samsung::wasm::ElementaryMediaTrack();
+    if (audioEnabled_) {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        auto removedAudio = source_.RemoveTrack(audioTrack_);
+        Log(IHS_LogLevelInfo, "Player", "Live switch: RemoveTrack(audio) %d",
+            static_cast<int>(removedAudio.operation_result));
+        audioTrack_ = samsung::wasm::ElementaryMediaTrack();
+    }
+    element_.SetSrc(nullptr);
+    WaitFor(kOpenTimeout, [this] { return sourceState_ == ReadyState::kDetached; });
+    element_.SetSrc(&source_);
+    if (!WaitFor(kOpenTimeout, [this] { return sourceState_ == ReadyState::kClosed; })) {
+        Log(IHS_LogLevelError, "Player", "Live switch: the source did not attach again");
+        return false;
+    }
+    Log(IHS_LogLevelInfo, "Player", "Live switch: detached and attached again at %d ms", since());
+
+    if (audioEnabled_) {
+        auto audio = source_.AddTrack(samsung::wasm::ElementaryAudioTrackConfig{
+                "audio/webm; codecs=\"pcm\"", {}, samsung::wasm::SampleFormat::kS16,
+                samsung::wasm::ChannelLayout::kStereo, kSampleRate,
+        });
+        if (!audio) {
+            Log(IHS_LogLevelError, "Player", "Live switch: audio AddTrack failed: %d",
+                static_cast<int>(audio.operation_result));
+            return false;
+        }
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        audioTrack_ = std::move(*audio);
+        audioTrack_.SetListener(&audioListener_);
+    }
+
+    // The callback form reports a hardware decoder that isn't available; the plain one doesn't.
+    const char *mime = nullptr;
+    for (const TrackChoice &choice : choices) {
+        // Shared with the callback, which may still come after a timeout here.
+        struct Added {
+            bool done = false;
+            OperationResult result = OperationResult::kFailed;
+            samsung::wasm::ElementaryMediaTrack track;
+        };
+        auto added = std::make_shared<Added>();
+        auto started = source_.AddTrack(
+                samsung::wasm::ElementaryVideoTrackConfig{choice.mime, {}, config.width, config.height, choice.fps, 1},
+                [this, added](OperationResult r, samsung::wasm::ElementaryMediaTrack track) {
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    added->result = r;
+                    added->track = std::move(track);
+                    added->done = true;
+                    changed_.notify_all();
+                });
+        if (started.operation_result != OperationResult::kSuccess) {
+            Log(IHS_LogLevelWarn, "Player", "Live switch: AddTrack(%s) refused: %d", choice.mime,
+                static_cast<int>(started.operation_result));
+            continue;
+        }
+        if (!WaitFor(kOpenTimeout, [&added] { return added->done; })) {
+            Log(IHS_LogLevelError, "Player", "Live switch: AddTrack(%s) never finished", choice.mime);
+            return false;
+        }
+        if (added->result == OperationResult::kSuccess && added->track.IsValid()) {
+            videoTrack_ = std::move(added->track);
+            mime = choice.mime;
+            trackFps_ = choice.fps;
+            break;
+        }
+        Log(IHS_LogLevelWarn, "Player", "Live switch: AddTrack(%s) failed: %d", choice.mime,
+            static_cast<int>(added->result));
+    }
+    if (mime == nullptr) return false;
+    videoTrack_.SetListener(&videoListener_);
+    Log(IHS_LogLevelInfo, "Player", "Live switch: tracks added at %d ms", since());
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        waitKeyframe_ = true;
+        lostReported_ = false;
+    }
+    source_.Open([](OperationResult) {});
+    if (!WaitFor(kOpenTimeout, [this] { return sourceState_ == ReadyState::kOpenPending ||
+                                               sourceState_ == ReadyState::kOpen; })) {
+        Log(IHS_LogLevelError, "Player", "Live switch: the source did not open again (state %d)",
+            static_cast<int>(sourceState_));
+        return false;
+    }
+    element_.Play([](OperationResult result) {
+        if (result != OperationResult::kSuccess) {
+            Log(IHS_LogLevelError, "Player", "Live switch: Play() failed: %d", static_cast<int>(result));
+        }
+    });
+    if (!WaitFor(kOpenTimeout, [this] { return videoOpen_ && (!audioEnabled_ || audioOpen_); })) {
+        Log(IHS_LogLevelError, "Player", "Live switch: tracks did not open (video=%d audio=%d)", videoOpen_.load(),
+            audioOpen_.load());
+        return false;
+    }
+    // New tracks start a new session, and appends stamped with the old one are ignored
+    // (kAppendIgnored): take the ids from the tracks themselves.
+    if (auto id = videoTrack_.GetSessionId()) videoSession_ = *id;
+    if (audioEnabled_) {
+        std::lock_guard<std::mutex> lock(audioMutex_);
+        if (auto id = audioTrack_.GetSessionId()) audioSession_ = *id;
+    }
+    openCodec_ = config.codec;
+    openMain10_ = main10;
+    Log(IHS_LogLevelInfo, "Player", "Live switch: playing %s in %d ms (sessions video %u, audio %u)", mime, since(),
+        static_cast<unsigned>(videoSession_.load()), static_cast<unsigned>(audioSession_.load()));
+    return true;
+}
+
 int Player::VideoStart(const IHS_StreamVideoConfig &config) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
@@ -246,6 +386,19 @@ int Player::VideoStart(const IHS_StreamVideoConfig &config) {
     lastFrame_ = {};
     bool audio = audioEnabled_;
     bool main10 = hdr_ || config.colorspace == IHS_StreamVideoColorspaceHDR10;
+    if (sourceOpened_ && !keepTracks_ && (openCodec_ != config.codec || openMain10_ != main10)) {
+        // The open tracks can't decode the new video. Fed to them anyway, an HEVC track took
+        // H.264 frames without showing any, and after about 40 s the TV closed the source: the
+        // picture stayed frozen, then black, with sound and controls going on. Set the player up
+        // again for the new codec; if that fails, drop the frames until the app has started the
+        // session over (a new page sets up new tracks).
+        Log(IHS_LogLevelWarn, "Player", "Steam switched the video from codec %d%s to codec %d%s",
+            openCodec_, openMain10_ ? " (10-bit)" : "", config.codec, main10 ? " (10-bit)" : "");
+        if (SwitchVideoTrack(config, main10)) return 0;
+        Log(IHS_LogLevelWarn, "Player", "Live switch failed; starting over");
+        formatChanged_ = true;
+        return -1;
+    }
     if (sourceOpened_ &&
         (!keepTracks_ || (openCodec_ == config.codec && openMain10_ == main10 && openAudio_ == audio))) {
         // Same source, same tracks; the frames carry the new size in their SPS, and the track's
@@ -281,7 +434,7 @@ int Player::VideoStart(const IHS_StreamVideoConfig &config) {
 }
 
 IHS_StreamVideoSubmitResult Player::VideoFrame(const uint8_t *data, size_t len, bool keyframe) {
-    if (!videoOpen_) {
+    if (!videoOpen_ || formatChanged_) {
         return IHS_StreamVideoSubmitOK;
     }
     uint32_t width, height;

@@ -83,6 +83,10 @@ public:
     // With kept tracks, a stream needed other tracks than the ones the page set up: only a new
     // page (app start) can play it.
     bool restartNeeded() const { return restartNeeded_; }
+    // Steam switched the video to another codec or HEVC profile mid-session (it drops HEVC when
+    // its hardware encoder falls behind, and may go back to it later), which the open tracks
+    // can't play: the session has to start over with a new page.
+    bool formatChanged() const { return formatChanged_; }
     // VideoStart has set the tracks up for this page.
     bool setUp() const { return sourceUsed_; }
 
@@ -122,6 +126,7 @@ private:
     class SourceListener : public samsung::wasm::ElementaryMediaStreamSourceListener {
     public:
         explicit SourceListener(Player *player) : player_(player) {}
+        void OnSourceDetached() override;
         void OnSourceClosed() override;
         void OnSourceOpenPending() override;
         void OnSourceOpen() override;
@@ -145,6 +150,9 @@ private:
     };
 
     bool OpenSource(const IHS_StreamVideoConfig &config);
+    // Sets the player up again for another codec, within the page: Steam switched codecs
+    // mid-session. false: a step failed, and the session has to start over (formatChanged()).
+    bool SwitchVideoTrack(const IHS_StreamVideoConfig &config, bool main10);
     bool WaitFor(std::chrono::milliseconds timeout, const std::function<bool()> &condition);
     Seconds Now() const;
     void AppendPcm(const int16_t *pcm, int samplesPerChannel);
@@ -166,6 +174,7 @@ private:
     bool openAudio_ = false;
     bool openMain10_ = false;
     std::atomic<bool> restartNeeded_{false};
+    std::atomic<bool> formatChanged_{false};
     std::atomic<bool> videoOpen_{false};
     std::atomic<bool> audioOpen_{false};
     std::atomic<samsung::wasm::SessionId> videoSession_{0};

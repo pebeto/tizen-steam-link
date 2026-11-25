@@ -47,7 +47,8 @@ with each kind of loss like this:
 | A control message arrives twice | Steam resends a message when the app's confirmation is lost, often after the app has already handled it. The app ignores such a copy. It used to keep it in a free slot of its packet window, and 128 messages later dropped the message due in that slot, every time Steam resent it: controller input stopped for up to 18 seconds, about once a minute. |
 | The network stops for a few seconds | A channel that falls behind by more than its window (256 packets for audio, 2048 for video) starts over from the newest packet. |
 | The computer goes silent for 10 seconds | The session ends, and the app reconnects by itself, up to twice in a row, if the computer answers within 15 seconds. |
-| Picture and sound stop while the computer still answers | After 15 seconds the app ends that stream and reconnects the same way. |
+| Picture and sound stop while the computer still answers | After 15 seconds without video or audio reaching the TV's player, the app ends that stream and reconnects the same way. This also covers a player that stops taking frames while they still arrive. |
+| Steam switches the video codec mid-stream | With the codec on HEVC, Steam goes on in H.264 when its hardware HEVC encoder falls behind. The TV's open tracks can't play the new codec, so the app sets its player up again for it within the page (under a second on a QN85A). If that fails, it reconnects, and asks for H.264 until it starts again. |
 
 A lower bandwidth limit helps on a busy network: Steam then makes smaller keyframes, which
 means fewer packets to lose. With Adaptive, Steam sets the bitrate itself: it lowers it when
