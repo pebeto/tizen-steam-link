@@ -423,7 +423,20 @@
         return '';
     }
 
-    function renderHosts() {
+    // What the computer tiles and their details line show; renderHosts(true) skips the rebuild
+    // when it hasn't changed.
+    var renderedHosts = null;
+
+    function hostsSignature(hosts) {
+        return JSON.stringify(hosts.map(function (h) {
+            return [h.ip, h.hostname, hostState(h).cls, h.ostype, !!h.mac];
+        }));
+    }
+
+    // onlyIfChanged: every computer on the network answers discovery about once a second, and
+    // each answer scheduled a render. Rebuilding the row every time repainted the whole screen
+    // several times a second, which on a TV kept the page busy and the menu sluggish.
+    function renderHosts(onlyIfChanged) {
         var grid = $('#hosts');
         var cur = focused();
         var keepIp = cur && grid.contains(cur) ? cardKey(cur) : null;
@@ -437,6 +450,10 @@
             if (a.paired !== b.paired) return a.paired ? -1 : 1;
             return a.hostname.localeCompare(b.hostname);
         });
+
+        var signature = hostsSignature(hosts);
+        if (onlyIfChanged && signature === renderedHosts) return;
+        renderedHosts = signature;
 
         grid.innerHTML = '';
         hosts.forEach(function (h) {
@@ -484,7 +501,7 @@
         renderPending = true;
         setTimeout(function () {
             renderPending = false;
-            renderHosts();
+            renderHosts(true);
         }, 150);
     }
 

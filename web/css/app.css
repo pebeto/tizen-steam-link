@@ -65,9 +65,24 @@ html, body {
     -webkit-font-smoothing: antialiased;
 }
 
-body {
+/* The backdrop is a layer of its own, drawn once. As the body's background it was part of the
+ * page's one layer, and every focus change or tile update redrew all of 1920x1080, gradients
+ * included: on a TV, a few hundred ms each, enough to make the menu crawl. */
+html {
+    background: var(--bg-bottom);
+}
+
+body::before {
+    content: "";
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 1920px;
+    height: 1080px;
+    z-index: -1;
     background: radial-gradient(1400px 700px at 18% -10%, rgba(26, 72, 120, 0.35), rgba(26, 72, 120, 0) 70%),
                 linear-gradient(180deg, var(--bg-top) 0%, var(--bg-bottom) 100%);
+    will-change: transform;
 }
 
 [hidden] {
@@ -194,7 +209,10 @@ svg {
     background: var(--panel-2);
     overflow: hidden;
     outline: none;
-    transition: transform 140ms ease, box-shadow 140ms ease, background 140ms ease;
+    /* Each tile is a layer, so focusing one redraws that tile only and the scale runs on the
+     * GPU. Only the transform is animated: an animated glow redraws on every frame. */
+    will-change: transform;
+    transition: transform 140ms ease;
 }
 
 .tile .art {
