@@ -904,6 +904,66 @@ void TestDataChannelGetsPastLostPacket() {
     IHS_SessionDestroy(session);
 }
 
+// A data channel whose window got ahead of the stream must start over when the stream's packets
+// turn up far behind it, instead of ignoring them all as already played.
+void TestDataChannelStartsOverFarBehind() {
+    uint8_t random[tsl::Identity::kRandomBytes] = {4};
+    tsl::Identity id = tsl::Identity::FromRandom(random, "test");
+    IHS_ClientConfig config = id.ClientConfig();
+    tsl::HostKey key{};
+    config.secretKey = key.data();
+    IHS_SessionInfo info{};
+    IHS_IPAddressFromString(&info.address.ip, "127.0.0.1");
+    info.address.port = 27031;
+    info.sessionKeyLen = 32;
+    IHS_Session *session = IHS_SessionCreate(&config, &info);
+    AudioCapture capture;
+    static const IHS_StreamAudioCallbacks callbacks = {
+            .start = CaptureAudioStart,
+            .submit = CaptureAudioSubmit,
+            .stop = CaptureAudioStop,
+            .lost = CaptureAudioLost,
+    };
+    IHS_SessionSetAudioCallbacks(session, &callbacks, &capture);
+    CStartAudioDataMsg start = CSTART_AUDIO_DATA_MSG__INIT;
+    start.channel = 3;
+    start.codec = k_EStreamAudioCodecOpus;
+    start.channels = 2;
+    start.frequency = 48000;
+    IHS_SessionChannel *channel = IHS_SessionChannelDataAudioCreate(session, &start);
+
+    // One packet per frame; the payload is the packet id's low byte.
+    auto send = [&](uint16_t id) {
+        IHS_SessionPacket packet{};
+        packet.header.type = IHS_SessionPacketTypeUnreliable;
+        packet.header.channelId = static_cast<IHS_SessionChannelId>(start.channel);
+        packet.header.packetId = id;
+        packet.header.sendTimestamp = IHS_SESSION_PACKET_TIMESTAMP_FROM_MILLIS(1000 + (id % 1000) * 10);
+        uint8_t body[1 + 12 + 1] = {k_EStreamDataPacket, static_cast<uint8_t>(id), static_cast<uint8_t>(id >> 8)};
+        body[13] = static_cast<uint8_t>(id);
+        IHS_BufferInit(&packet.body, sizeof(body), sizeof(body));
+        IHS_BufferAppendMem(&packet.body, body, sizeof(body));
+        IHS_SessionChannelDataReceived(channel, &packet);
+        IHS_BufferClear(&packet.body, true);
+    };
+    auto received = [&](int payload) {
+        std::unique_lock<std::mutex> lock(capture.mutex);
+        return capture.cond.wait_for(lock, std::chrono::seconds(1), [&] {
+            return std::find(capture.payloads.begin(), capture.payloads.end(), payload) != capture.payloads.end();
+        });
+    };
+    for (uint16_t i = 100; i < 105; i++) send(i);
+    CHECK(received(104));
+    send(20000);  // far ahead: the channel starts over from it (0020)
+    CHECK(received(20000 & 0xFF));
+    // The stream goes on from 105, now about 20000 behind the window and the frame expected.
+    for (uint16_t i = 105; i < 115; i++) send(i);
+    CHECK(received(114));
+    IHS_SessionChannelStop(channel);
+    IHS_SessionChannelDestroy(channel);
+    IHS_SessionDestroy(session);
+}
+
 // The host silence check reads the clock, then the last packet's time. A packet arriving in
 // between can be 1 ms newer than the clock reading: that is no silence, not 4294967295 ms of it,
 // which used to end live streams.
@@ -1151,6 +1211,7 @@ int main() {
     TestUnknownVarint();
     TestFec();
     TestDataChannelGetsPastLostPacket();
+    TestDataChannelStartsOverFarBehind();
     TestRetransmissionCancelRacesTimer();
     TestRoundTripSkipsNegativeSamples();
     TestSilenceMs();

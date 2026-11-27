@@ -1,0 +1,93 @@
+Start a data channel over when a packet comes from far behind.
+
+The packet window ignores a packet behind its newest one as already played, and the audio
+channel drops a frame behind the one it expects next. If either position gets ahead of the
+stream, every later packet is dropped too, until the 16-bit ids wrap: the sound goes silent for
+minutes while the video plays on.
+
+A packet further behind than the window holds, or an audio frame more than 256 behind (about
+2.5 s), now makes the channel start over from it, as one too far ahead already does (0020). The
+control channel still ignores late packets, since a resend that late is a copy.
+
+diff --git a/src/session/channels/ch_data.c b/src/session/channels/ch_data.c
+index 4a5a4f5..e9456a2 100644
+--- a/src/session/channels/ch_data.c
++++ b/src/session/channels/ch_data.c
+@@ -105,6 +105,15 @@ void IHS_SessionChannelDataReceived(IHS_SessionChannel *channel, IHS_SessionPack
+     IHS_SessionPacketType type = packet->header.type;
+     assert(type == IHS_SessionPacketTypeUnreliable || type == IHS_SessionPacketTypeUnreliableFrag);
+     IHS_MutexLock(dataCh->windowLock);
++    int tailOffset = IHS_SessionPacketsWindowTailOffset(dataCh->window, packet->header.packetId);
++    if (tailOffset < -(int) IHS_SessionPacketsWindowCapacity(dataCh->window)) {
++        // Further behind than the window holds: the window got ahead of the stream and would
++        // ignore every later packet too. Start over from this one.
++        IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data",
++                       "%s channel: packet %u is %d behind the newest, starting over",
++                       DataChannelName(channel->type), packet->header.packetId, -tailOffset);
++        IHS_SessionPacketsWindowReset(dataCh->window);
++    }
+     if (!IHS_SessionPacketsWindowAdd(dataCh->window, packet)) {
+         IHS_SessionLog(channel->session, IHS_LogLevelWarn, "Data",
+                        "%s channel: packet %u doesn't fit the window (%u free), starting over",
+diff --git a/src/session/channels/ch_data_audio.c b/src/session/channels/ch_data_audio.c
+index 3af08f5..9482bf1 100644
+--- a/src/session/channels/ch_data_audio.c
++++ b/src/session/channels/ch_data_audio.c
+@@ -31,6 +31,9 @@
+ 
+ #include "session/session_pri.h"
+ 
++/* Frames further behind than this (about 2.5 s) mean the ids went back, not a late frame. */
++#define AUDIO_RESYNC_FRAMES 256
++
+ typedef struct ChannelAudio {
+     IHS_SessionChannelData base;
+     IHS_StreamAudioConfig config;
+@@ -103,7 +106,12 @@ static void DataReceived(IHS_SessionChannel *channel, const IHS_SessionDataFrame
+     const IHS_StreamAudioCallbacks *callbacks = session->callbacks.audio;
+     if (header != NULL) {
+         int16_t gap = audioCh->frameIdStarted ? (int16_t) (header->id - audioCh->nextFrameId) : 0;
+-        if (gap < 0) {
++        if (gap < -AUDIO_RESYNC_FRAMES) {
++            // Dropping this would drop every later frame too, so start over from it.
++            IHS_SessionLog(session, IHS_LogLevelWarn, "Audio", "Frame %u is %d behind the one expected, starting over",
++                           header->id, -gap);
++            gap = 0;
++        } else if (gap < 0) {
+             // Older than a frame already passed on, or already reported lost.
+             return;
+         }
+diff --git a/src/session/window.c b/src/session/window.c
+index dac5b8b..60cf622 100644
+--- a/src/session/window.c
++++ b/src/session/window.c
+@@ -325,4 +325,11 @@ static inline void FrameItemUsePacket(IHS_SessionWindowItem *item, IHS_SessionPa
+ static inline void FrameItemRecycle(IHS_SessionWindowItem *item) {
+     IHS_BufferClear(&item->body, true);
+     memset(item, 0, sizeof(IHS_SessionWindowItem));
+-}
+\ No newline at end of file
++}
++int IHS_SessionPacketsWindowTailOffset(const IHS_SessionPacketsWindow *window, uint16_t packetId) {
++    return window->tail.pos < 0 ? 1 : (int16_t) (packetId - window->tail.id);
++}
++
++uint16_t IHS_SessionPacketsWindowCapacity(const IHS_SessionPacketsWindow *window) {
++    return window->capacity;
++}
+diff --git a/src/session/window.h b/src/session/window.h
+index 049b2c5..d906724 100644
+--- a/src/session/window.h
++++ b/src/session/window.h
+@@ -80,3 +80,11 @@ uint16_t IHS_SessionPacketsWindowAvailable(const IHS_SessionPacketsWindow *windo
+ uint16_t IHS_SessionPacketsWindowSize(const IHS_SessionPacketsWindow *window);
+ 
+ bool IHS_SessionPacketsWindowHasFrame(const IHS_SessionPacketsWindow *window);
++
++/**
++ * How far a packet id is past the newest packet added: 1 for the next one, 0 for the newest
++ * itself, negative for earlier ones. 1 when nothing has been added yet.
++ */
++int IHS_SessionPacketsWindowTailOffset(const IHS_SessionPacketsWindow *window, uint16_t packetId);
++
++uint16_t IHS_SessionPacketsWindowCapacity(const IHS_SessionPacketsWindow *window);
