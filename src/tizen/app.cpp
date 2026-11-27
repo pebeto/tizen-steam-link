@@ -636,10 +636,18 @@ samsung::wasm::EmssLatencyMode LatencyFor(bool hevc, int latency) {
 
 // Bound functions. All run on the browser main thread.
 
-std::string CreateIdentity(const std::string &randomHex, const std::string &name) {
+// Bound functions return strings through this, not as std::string. Emscripten 1.39's embind
+// temporarily overwrites the byte just past a returned std::string's buffer, which can be the
+// next heap chunk's header; another thread's malloc or free in that window corrupts the heap.
+emscripten::val JsString(const std::string &s) {
+    return emscripten::val::take_ownership(reinterpret_cast<emscripten::internal::EM_VAL>(
+            EM_ASM_INT({ return __emval_register(UTF8ToString($0)); }, s.c_str())));
+}
+
+emscripten::val CreateIdentity(const std::string &randomHex, const std::string &name) {
     uint8_t bytes[Identity::kRandomBytes];
-    if (!HexDecode(randomHex, bytes, sizeof(bytes)) || name.empty()) return "";
-    return Identity::FromRandom(bytes, name).Serialize();
+    if (!HexDecode(randomHex, bytes, sizeof(bytes)) || name.empty()) return JsString("");
+    return JsString(Identity::FromRandom(bytes, name).Serialize());
 }
 
 bool Init(const std::string &identity) { return g_app->Init(identity); }
@@ -694,7 +702,7 @@ void PressGuide() { g_app->PressGuide(); }
 void MouseMove(int dx, int dy) { g_app->MouseMove(dx, dy); }
 void MouseButton(int button, bool down) { g_app->MouseButton(button, down); }
 void MouseWheel(int deltaY) { g_app->MouseWheel(deltaY); }
-std::string Stats() { return g_app->Stats(); }
+emscripten::val Stats() { return JsString(g_app->Stats()); }
 void SetLogLevel(int level) { tsl::SetLogLevel(static_cast<IHS_LogLevel>(level)); }
 
 }  // namespace
